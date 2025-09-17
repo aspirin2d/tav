@@ -5,20 +5,23 @@
     "db:update": "drizzle-kit generate && drizzle-kit push",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.8",
     "@hono/node-server": "^1.19.3",
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.44.5",
-    "hono": "^4.9.7"
+    "hono": "^4.9.7",
+    "smol-toml": "^1.4.2",
+    "zod": "^4.1.9"
   },
   "devDependencies": {
     "@types/node": "^20.11.17",
     "drizzle-kit": "^0.31.4",
     "tsx": "^4.7.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
   }
 }
-

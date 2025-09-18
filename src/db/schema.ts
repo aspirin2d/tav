@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  foreignKey,
   check,
   integer,
   smallint,
@@ -11,6 +12,7 @@ import {
   uniqueIndex,
   index,
   pgEnum,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import z from "zod";
 
@@ -52,22 +54,20 @@ export const tav = pgTable(
 export const skill = pgTable(
   "skill",
   {
-    id: serial().primaryKey(),
+    id: text("id").notNull(), // skill def id
     tavId: integer("tav_id")
       .notNull()
       .references(() => tav.id, { onDelete: "cascade" }),
-    skillId: text("skill_id").notNull(),
     xp: integer("xp").notNull().default(0),
     xpLevel: smallint("xp_level").notNull().default(1),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("uniq_tav_skill").on(table.tavId, table.skillId)],
+  (table) => [primaryKey({ columns: [table.id, table.tavId] })],
 );
 
 export const inventory = pgTable(
   "inventory",
   {
-    id: serial().primaryKey(),
     tavId: integer("tav_id")
       .notNull()
       .references(() => tav.id, { onDelete: "cascade" }),
@@ -78,11 +78,11 @@ export const inventory = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [
+  (table) => [
     // one stack per (duplicant, slot)
-    uniqueIndex("uniq_tav_slot").on(t.tavId, t.slot),
-    index("idx_tav_inv_tav").on(t.tavId),
-    index("idx_tav_inv_item").on(t.itemId),
+    primaryKey({ columns: [table.slot, table.tavId] }),
+    index("idx_tav_inv_tav").on(table.tavId),
+    index("idx_tav_inv_item").on(table.itemId),
   ],
 );
 
@@ -99,14 +99,20 @@ export const task = pgTable(
     tavId: integer("tav_id")
       .notNull()
       .references(() => tav.id, { onDelete: "cascade" }),
-    skillId: text("skill_id").notNull(),
+    skillId: text("skill_id").notNull(), // skill def id
+    targetId: text("target_id").notNull(), // target def id
     status: taskStatusEnum("status").notNull().default("pending"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
-    executedAt: timestamp("executed_at"), // last executed time
+    startedAt: timestamp("started_at"),
+    endedAt: timestamp("ended_at"),
   },
   (table) => [
+    foreignKey({
+      name: "skill",
+      columns: [table.skillId, table.tavId],
+      foreignColumns: [skill.id, skill.tavId],
+    }).onDelete("cascade"),
     index("idx_task_tav").on(table.tavId),
-    index("idx_task_skill").on(table.skillId),
     uniqueIndex("uniq_task_executing")
       .on(table.tavId)
       .where(sql`${table.status} = 'executing'`),
@@ -114,9 +120,9 @@ export const task = pgTable(
 );
 
 export const tavRelations = relations(tav, ({ many }) => ({
+  tasks: many(task),
   skills: many(skill),
   inventory: many(inventory),
-  tasks: many(task),
 }));
 
 export const tavSkillRelations = relations(skill, ({ one }) => ({

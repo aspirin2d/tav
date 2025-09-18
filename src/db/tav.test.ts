@@ -59,12 +59,17 @@ describe("tav database helpers", () => {
   it("loads a tav alongside skills, tasks, and inventory", async () => {
     const created = await createTav(db, { name: "Karlach" });
 
-    await db
-      .insert(skill)
-      .values({ tavId: created.id, skillId: "intimidation" });
-    await db
-      .insert(task)
-      .values({ tavId: created.id, skillId: "intimidation" });
+    const intimidationSkill = {
+      tavId: created.id,
+      id: "intimidation",
+    } satisfies typeof skill.$inferInsert;
+
+    await db.insert(skill).values(intimidationSkill);
+    await db.insert(task).values({
+      tavId: created.id,
+      skillId: "intimidation",
+      targetId: "goblin_camp",
+    });
     await db
       .insert(inventory)
       .values({ tavId: created.id, slot: 0, itemId: "infernal_engine" });
@@ -79,10 +84,7 @@ describe("tav database helpers", () => {
 
     expect(tavWithRelations.skills).toHaveLength(1);
     expect(tavWithRelations.skills[0]).toEqual(
-      expect.objectContaining({
-        tavId: created.id,
-        skillId: "intimidation",
-      }),
+      expect.objectContaining(intimidationSkill),
     );
     expect(tavWithRelations.tasks).toHaveLength(1);
     expect(tavWithRelations.inventory).toHaveLength(1);

@@ -7,3 +7,103 @@ con = 10
 int = 10
 wis = 10
 cha = 10
+
+[[skills]]
+id = "logging"
+name = "Logging"
+description = "logging the wood"
+priority = 5
+target_ids = ["small_tree", "big_tree"]
+add_requirements = []
+execute_requirements = [
+  { op = "ability_min", ability = "str", value = 10 },
+  { op = "custom", name = "logging_allowed" },
+]
+
+[[skills]]
+id = "wood_craft"
+name = "Wood Craft"
+description = "Craft the wood"
+priority = 5
+target_ids = ["plank"]
+add_requirements = [
+  { op = "skill_level_min", skillId = "logging", level = 2 },
+  { op = "flag_present", flagId = "sawmill_ready" },
+]
+execute_requirements = [
+  { op = "item_required", itemId = "log", quantity = 1 },
+]
+
+[[skills]]
+id = "idle"
+name = "Idle"
+description = "Do nothing"
+priority = 5
+target_ids = ["null"]
+add_requirements = []
+execute_requirements = []
+
+[[skills]]
+id = "survey"
+name = "Survey"
+description = "Scout the surroundings"
+priority = 3
+target_ids = ["forest_edge", "mountain_pass"]
+add_requirements = []
+execute_requirements = [
+  { op = "or", requirements = [
+    { op = "flag_present", flagId = "scout_ready" },
+    { op = "skill_level_min", skillId = "logging", level = 3 },
+  ] },
+]
+
+
+[[skill_targets]]
+id = "small_tree"
+name = "Small tree"
+description = "a small tree"
+add_requirements = [
+  { op = "flag_present", flagId = "forest_access" },
+]
+execute_requirements = []
+
+[[skill_targets]]
+id = "big_tree"
+name = "Big tree"
+description = "a towering tree"
+add_requirements = []
+execute_requirements = [
+  { op = "ability_min", ability = "str", value = 12 },
+]
+
+[[skill_targets]]
+id = "plank"
+name = "Plank"
+description = "a wooden plank"
+add_requirements = [
+  { op = "flag_present", flagId = "sawmill_ready" },
+]
+execute_requirements = []
+
+[[skill_targets]]
+id = "forest_edge"
+name = "Forest edge"
+description = "a dense treeline"
+add_requirements = []
+execute_requirements = [
+  { op = "and", requirements = [
+    { op = "flag_present", flagId = "forest_access" },
+    { op = "item_required", itemId = "torch", quantity = 1 },
+  ] },
+]
+
+[[skill_targets]]
+id = "mountain_pass"
+name = "Mountain pass"
+description = "a steep mountain pass"
+add_requirements = [
+  { op = "ability_min", ability = "con", value = 11 },
+]
+execute_requirements = [
+  { op = "custom", name = "weather_clear" },
+]

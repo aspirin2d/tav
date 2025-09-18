@@ -2,12 +2,21 @@ import { readFileSync } from "node:fs";
 import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
 
-import { abilityScoresSchema, type AbilityScores } from "./db/schema.js";
+import {
+  abilityScoresSchema,
+  skillDefinitionSchema,
+  skillTargetDefinitionSchema,
+  type AbilityScores,
+  type SkillDefinition,
+  type SkillTargetDefinition,
+} from "./db/schema.js";
 
 const configSchema = z.object({
   defaults: z.object({
     ability_scores: abilityScoresSchema,
   }),
+  skills: z.array(skillDefinitionSchema),
+  skill_targets: z.array(skillTargetDefinitionSchema),
 });
 
 type ConfigShape = z.infer<typeof configSchema>;
@@ -24,3 +33,8 @@ const loadedConfig = loadConfig();
 
 export const DEFAULT_TAV_ABILITY_SCORES: AbilityScores =
   loadedConfig.defaults.ability_scores;
+
+export const SKILL_DEFINITIONS: SkillDefinition[] = loadedConfig.skills;
+
+export const SKILL_TARGET_DEFINITIONS: SkillTargetDefinition[] =
+  loadedConfig.skill_targets;

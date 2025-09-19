@@ -4,6 +4,7 @@ import {
   DEFAULT_TAV_ABILITY_SCORES,
   SKILL_DEFINITIONS,
   TARGET_DEFINITIONS,
+  ITEM_DEFINITIONS,
 } from "./config.js";
 import { TASK_TARGETLESS_KEY } from "./db/schema.js";
 
@@ -164,6 +165,27 @@ describe("config schema", () => {
         executeRequirements: [{ op: "custom", name: "weather_clear" }],
         skills: ["survey"],
         completionEffect: { tavXp: 7 },
+      }),
+    );
+  });
+
+  it("loads item definitions from the config file", () => {
+    expect(ITEM_DEFINITIONS).toContainEqual(
+      expect.objectContaining({
+        id: "log",
+        name: "Log",
+        stackLimit: 99,
+        weight: 2,
+        value: 3,
+        tags: ["resource", "wood"],
+      }),
+    );
+
+    expect(ITEM_DEFINITIONS).toContainEqual(
+      expect.objectContaining({
+        id: "torch",
+        stackLimit: 5,
+        tags: ["utility", "light_source"],
       }),
     );
   });

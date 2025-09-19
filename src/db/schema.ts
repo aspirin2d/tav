@@ -229,6 +229,20 @@ const labeledDefinitionSchema = z.object({
   description: z.string().min(1),
 });
 
+const rawItemDefinitionSchema = labeledDefinitionSchema.extend({
+  stack_limit: z.int().min(1).max(999).default(99),
+  weight: z.int().min(0).max(1000).default(0),
+  value: z.int().min(0).max(1_000_000).default(0),
+  tags: z.array(slugSchema).default([]),
+});
+
+export const itemDefinitionSchema = rawItemDefinitionSchema.transform(
+  ({ stack_limit, ...rest }) => ({
+    ...rest,
+    stackLimit: stack_limit,
+  }),
+);
+
 export const TASK_TARGETLESS_KEY = "null";
 
 const completionEffectValueSchema = z.object({
@@ -369,6 +383,7 @@ export const targetDefinitionSchema = labeledDefinitionSchema
   }));
 
 export type AbilityScores = z.infer<typeof abilityScoresSchema>;
+export type ItemDefinition = z.infer<typeof itemDefinitionSchema>;
 export type SkillDefinition = z.infer<typeof skillDefinitionSchema>;
 export type TargetDefinition = z.infer<typeof targetDefinitionSchema>;
 

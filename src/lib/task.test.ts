@@ -7,10 +7,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { tickTask } from "./task.js";
-import {
-  addTask,
-  createTav,
-} from "../db/tav.js";
+import { addTask, createTav } from "./tav.js";
+import { getInventoryTotals } from "./inventory.js";
 import * as schema from "../db/schema.js";
 
 const { task, tav: tavTable, skill, inventory } = schema;
@@ -307,6 +305,37 @@ describe("task ticking", () => {
       expect.objectContaining({ itemId: "plank", qty: 1 }),
     );
     expect(items.find((item) => item.itemId === "log")).toBeUndefined();
+  });
+
+  it("handles completion effects that grant no rewards", async () => {
+    const tav = await createTav(db, { name: "Idler" });
+
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "idle",
+      targetId: null,
+    });
+
+    await tickTask(db, {
+      tavId: tav.id,
+      now: new Date(0),
+    });
+
+    const outcome = await tickTask(db, {
+      tavId: tav.id,
+      now: new Date(5000),
+    });
+
+    expect(outcome.completed).toEqual([
+      {
+        tavId: tav.id,
+        skillId: "idle",
+        targetId: schema.TASK_TARGETLESS_KEY,
+      },
+    ]);
+
+    const totals = await getInventoryTotals(db, tav.id);
+    expect(totals).toEqual({});
   });
 
   // Requirement failures should keep tasks in the queue untouched.

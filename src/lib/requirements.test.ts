@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateRequirements, type Requirement } from "./schema.js";
+import { evaluateRequirements, type Requirement } from "../db/schema.js";
 
 describe("requirement evaluation", () => {
   it("treats an empty requirement list as satisfied", () => {

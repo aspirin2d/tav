@@ -14,8 +14,12 @@ import {
   getTavById,
   getTavWithRelations,
 } from "./tav.js";
-import * as schema from "./schema.js";
-import { DEFAULT_TAV_ABILITY_SCORES } from "../config.js";
+import * as schema from "../db/schema.js";
+import {
+  DEFAULT_TAV_ABILITY_SCORES,
+  SKILL_DEFINITIONS,
+  TARGET_DEFINITIONS,
+} from "../config.js";
 
 const { skill, inventory, task, tav: tavTable } = schema;
 
@@ -303,5 +307,84 @@ describe("tav database helpers", () => {
         targetId: "small_tree",
       }),
     ).rejects.toThrow(/Unknown skill id/);
+  });
+
+  it("throws when canExecuteTask receives an unknown skill", async () => {
+    const created = await createTav(db, { name: "Mystic" });
+
+    await expect(
+      canExecuteTask(db, {
+        tavId: created.id,
+        skillId: "arcane_blast",
+        targetId: "small_tree",
+      }),
+    ).rejects.toThrow(/Unknown skill id/);
+  });
+
+  it("throws when canExecuteTask targets a disallowed id", async () => {
+    const created = await createTav(db, { name: "Cleric" });
+
+    await expect(
+      canExecuteTask(db, {
+        tavId: created.id,
+        skillId: "wood_craft",
+        targetId: "small_tree",
+      }),
+    ).rejects.toThrow(/cannot target id/);
+  });
+
+  it("returns false when a target forbids the skill", async () => {
+    const loggingDefinition = SKILL_DEFINITIONS.find(
+      (definition) => definition.id === "logging",
+    );
+    if (!loggingDefinition) {
+      throw new Error("Missing logging definition");
+    }
+
+    loggingDefinition.targetIds.push("forbidden_grove");
+    TARGET_DEFINITIONS.push({
+      id: "forbidden_grove",
+      name: "Forbidden Grove",
+      description: "A grove warded against logging.",
+      addRequirements: [],
+      executeRequirements: [],
+      completionEffect: undefined,
+      skills: ["survey"],
+    });
+
+    const created = await createTav(db, { name: "Forester" });
+
+    const result = await canExecuteTask(db, {
+      tavId: created.id,
+      skillId: "logging",
+      targetId: "forbidden_grove",
+      context: { customChecks: { logging_allowed: true } },
+    });
+
+    expect(result).toBe(false);
+
+    loggingDefinition.targetIds.pop();
+    TARGET_DEFINITIONS.pop();
+  });
+
+  it("merges map-based inventory overrides", async () => {
+    const created = await createTav(db, { name: "Mapper" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, created.id));
+
+    const canLog = await canExecuteTask(db, {
+      tavId: created.id,
+      skillId: "logging",
+      targetId: "small_tree",
+      context: {
+        customChecks: { logging_allowed: true },
+        inventory: new Map([["torch", 1]]),
+      },
+    });
+
+    expect(canLog).toBe(true);
   });
 });

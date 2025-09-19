@@ -8,6 +8,60 @@ int = 10
 wis = 10
 cha = 10
 
+[[items]]
+id = "log"
+name = "Log"
+description = "Rough-hewn wood ready for crafting."
+stack_limit = 99
+weight = 2
+value = 3
+tags = ["resource", "wood"]
+
+[[items]]
+id = "torch"
+name = "Torch"
+description = "A basic torch for exploring dark places."
+stack_limit = 5
+weight = 1
+value = 6
+tags = ["utility", "light_source"]
+
+[[items]]
+id = "plank"
+name = "Plank"
+description = "Sturdy lumber suitable for construction."
+stack_limit = 50
+weight = 3
+value = 8
+tags = ["resource", "wood"]
+
+[[items]]
+id = "stone_block"
+name = "Stone Block"
+description = "A heavy chunk of stone for masonry and fortifications."
+stack_limit = 40
+weight = 8
+value = 12
+tags = ["resource", "stone"]
+
+[[items]]
+id = "iron_ore"
+name = "Iron Ore"
+description = "Raw iron ore ready for smelting."
+stack_limit = 60
+weight = 5
+value = 15
+tags = ["resource", "metal"]
+
+[[items]]
+id = "healing_potion"
+name = "Healing Potion"
+description = "Restorative elixir favored by adventurers."
+stack_limit = 10
+weight = 1
+value = 30
+tags = ["consumable", "potion"]
+
 [[skills]]
 id = "logging"
 name = "Logging"

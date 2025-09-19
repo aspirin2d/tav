@@ -4,9 +4,11 @@ import { z } from "zod";
 
 import {
   abilityScoresSchema,
+  itemDefinitionSchema,
   skillDefinitionSchema,
   targetDefinitionSchema,
   type AbilityScores,
+  type ItemDefinition,
   type SkillDefinition,
   type TargetDefinition,
 } from "./db/schema.js";
@@ -17,6 +19,7 @@ const configSchema = z.object({
   }),
   skills: z.array(skillDefinitionSchema),
   targets: z.array(targetDefinitionSchema),
+  items: z.array(itemDefinitionSchema),
 });
 
 type ConfigShape = z.infer<typeof configSchema>;
@@ -37,3 +40,4 @@ export const DEFAULT_TAV_ABILITY_SCORES: AbilityScores =
 export const SKILL_DEFINITIONS: SkillDefinition[] = loadedConfig.skills;
 
 export const TARGET_DEFINITIONS: TargetDefinition[] = loadedConfig.targets;
+export const ITEM_DEFINITIONS: ItemDefinition[] = loadedConfig.items;

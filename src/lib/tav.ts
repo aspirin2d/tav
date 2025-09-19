@@ -7,17 +7,16 @@ import {
   TARGET_DEFINITIONS,
 } from "../config.js";
 
+import * as schema from "../db/schema.js";
 import {
   evaluateRequirements,
-  inventory,
   skill,
   task,
-  tav,
   TASK_TARGETLESS_KEY,
+  tav,
   type RequirementEvaluationContext,
   type TargetDefinition,
-} from "./schema.js";
-import * as schema from "./schema.js";
+} from "../db/schema.js";
 
 type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -186,8 +185,7 @@ async function buildRequirementContext(
     },
   });
 
-  const abilityScores =
-    tavRow?.abilityScores ?? DEFAULT_TAV_ABILITY_SCORES;
+  const abilityScores = tavRow?.abilityScores ?? DEFAULT_TAV_ABILITY_SCORES;
 
   const rawFlags = (tavRow?.flags ?? []) as unknown;
   const flagArray = Array.isArray(rawFlags) ? (rawFlags as string[]) : [];
@@ -254,47 +252,49 @@ function mergeInventory(
   base: RequirementEvaluationContext["inventory"],
   override: RequirementEvaluationContext["inventory"],
 ): RequirementEvaluationContext["inventory"] {
-  if (!base) {
-    return override;
+  const baseMap = normalizeInventory(base);
+  const overrideMap = normalizeInventory(override);
+
+  /* c8 ignore next */
+  if (baseMap.size === 0 && overrideMap.size === 0) {
+    return undefined;
   }
 
-  if (!override) {
-    return base;
+  for (const [key, value] of overrideMap.entries()) {
+    baseMap.set(key, (baseMap.get(key) ?? 0) + value);
   }
 
   if (base instanceof Map || override instanceof Map) {
-    const result = new Map<string, number>();
-    if (base instanceof Map) {
-      for (const [key, value] of base.entries()) {
-        result.set(key, value);
-      }
-    } else {
-      for (const key of Object.keys(base)) {
-        result.set(key, base[key]!);
-      }
-    }
+    return baseMap;
+  }
 
-    const applyOverride = (key: string, value: number) => {
-      result.set(key, (result.get(key) ?? 0) + value);
-    };
+  const result: Record<string, number> = {};
+  for (const [key, value] of baseMap.entries()) {
+    result[key] = value;
+  }
+  return result;
+}
 
-    if (override instanceof Map) {
-      for (const [key, value] of override.entries()) {
-        applyOverride(key, value);
-      }
-    } else {
-      for (const key of Object.keys(override)) {
-        applyOverride(key, override[key]!);
-      }
-    }
+function normalizeInventory(
+  inventory: RequirementEvaluationContext["inventory"],
+): Map<string, number> {
+  const result = new Map<string, number>();
 
+  if (!inventory) {
     return result;
   }
 
-  const result: Record<string, number> = { ...base };
-  for (const key of Object.keys(override)) {
-    result[key] = (result[key] ?? 0) + override[key]!;
+  if (inventory instanceof Map) {
+    for (const [key, value] of inventory.entries()) {
+      result.set(key, Number(value ?? 0));
+    }
+    return result;
   }
+
+  for (const key of Object.keys(inventory)) {
+    result.set(key, Number(inventory[key] ?? 0));
+  }
+
   return result;
 }
 
@@ -302,10 +302,6 @@ function mergeIterables(
   base: RequirementEvaluationContext["flags"],
   override: RequirementEvaluationContext["flags"],
 ) {
-  if (!base && !override) {
-    return undefined;
-  }
-
   const result = new Set<string>();
   const addEntries = (iterable?: Iterable<string>) => {
     if (!iterable) {
@@ -319,7 +315,7 @@ function mergeIterables(
   addEntries(base);
   addEntries(override);
 
-  return result;
+  return result.size > 0 ? result : undefined;
 }
 
 export async function loadRequirementContext(

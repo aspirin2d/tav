@@ -3,14 +3,14 @@ import type { PgliteDatabase } from "drizzle-orm/pglite";
 
 import { SKILL_DEFINITIONS, TARGET_DEFINITIONS } from "../config.js";
 import {
-  inventory,
   skill,
   task,
   tav,
   type CompletionEffect,
   type RequirementEvaluationContext,
 } from "../db/schema.js";
-import { canExecuteTask, loadRequirementContext } from "../db/tav.js";
+import { applyInventoryDelta, type InventoryDelta } from "./inventory.js";
+import { canExecuteTask, loadRequirementContext } from "./tav.js";
 import * as schema from "../db/schema.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
@@ -33,8 +33,6 @@ export type TickResult = {
   completed: TaskKey[];
   failed: TaskKey[];
 };
-
-type InventoryDelta = Record<string, number>;
 
 type TaskCompletionEffect = {
   tavXp?: number;
@@ -124,8 +122,8 @@ async function resolveLastTickTimestamp(
 }
 
 async function getExecutingTask(db: DatabaseClient, tavId: number) {
-  return db
-    .query.task.findFirst({
+  return db.query.task
+    .findFirst({
       where: (tasks, { and: andOp, eq: eqOp }) =>
         andOp(eqOp(tasks.tavId, tavId), eqOp(tasks.status, "executing")),
     })
@@ -201,7 +199,9 @@ function resolveCompletionEffect(
 
   return mergeCompletionEffects(
     coerceEffect(skillDefinition?.completionEffect),
-    coerceEffect(skillDefinition?.completionEffect?.targetOverrides?.[targetId]),
+    coerceEffect(
+      skillDefinition?.completionEffect?.targetOverrides?.[targetId],
+    ),
     coerceEffect(targetDefinition?.completionEffect),
   );
 }
@@ -217,7 +217,9 @@ type CompletionEffectLike =
   | null
   | undefined;
 
-function coerceEffect(effect: CompletionEffectLike): TaskCompletionEffect | null {
+function coerceEffect(
+  effect: CompletionEffectLike,
+): TaskCompletionEffect | null {
   if (!effect) {
     return null;
   }
@@ -233,7 +235,9 @@ function coerceEffect(effect: CompletionEffectLike): TaskCompletionEffect | null
   }
 
   if (effect.inventory) {
-    const entries = Object.entries(effect.inventory).filter(([, qty]) => qty !== 0);
+    const entries = Object.entries(effect.inventory).filter(
+      ([, qty]) => qty !== 0,
+    );
     if (entries.length > 0) {
       result.inventory = Object.fromEntries(entries);
     }
@@ -290,13 +294,11 @@ function mergeCompletionEffects(
   }
 
   if (sawInventory) {
-    for (const key of Object.keys(inventoryTotals)) {
-      if (inventoryTotals[key] === 0) {
-        delete inventoryTotals[key];
-      }
-    }
-    if (Object.keys(inventoryTotals).length > 0) {
-      result.inventory = inventoryTotals;
+    const cleaned = Object.fromEntries(
+      Object.entries(inventoryTotals).filter(([, value]) => value !== 0),
+    );
+    if (Object.keys(cleaned).length > 0) {
+      result.inventory = cleaned;
     }
   }
 
@@ -328,119 +330,12 @@ async function applyTaskCompletionEffects(
       .update(skill)
       .set({ xp: sql`${skill.xp} + ${skillXp}` })
       .where(
-        and(
-          eq(skill.tavId, executing.tavId),
-          eq(skill.id, executing.skillId),
-        ),
+        and(eq(skill.tavId, executing.tavId), eq(skill.id, executing.skillId)),
       );
   }
 
   if (effect.inventory) {
     await applyInventoryDelta(db, executing.tavId, effect.inventory);
-  }
-}
-
-async function applyInventoryDelta(
-  db: DatabaseClient,
-  tavId: number,
-  deltas: InventoryDelta,
-) {
-  const entries = Object.entries(deltas).filter(([, value]) => value !== 0);
-
-  if (entries.length === 0) {
-    return;
-  }
-
-  const existing = await db
-    .select({
-      slot: inventory.slot,
-      itemId: inventory.itemId,
-      qty: inventory.qty,
-    })
-    .from(inventory)
-    .where(eq(inventory.tavId, tavId));
-
-  type Snapshot = { slot: number; qty: number };
-
-  const state = new Map<string, Snapshot>();
-  let maxSlot = -1;
-
-  for (const row of existing) {
-    const slot = Number(row.slot ?? 0);
-    const qty = Number(row.qty ?? 0);
-    state.set(row.itemId, { slot, qty });
-    if (slot > maxSlot) {
-      maxSlot = slot;
-    }
-  }
-
-  let nextSlot = maxSlot + 1;
-
-  for (const [itemId, rawChange] of entries) {
-    const change = Math.trunc(Number(rawChange));
-
-    if (!Number.isFinite(change) || change === 0) {
-      continue;
-    }
-
-    const snapshot = state.get(itemId);
-
-    // Grow stacks when possible, otherwise consume an open slot for new items.
-    if (change > 0) {
-      if (snapshot) {
-        const newQty = snapshot.qty + change;
-        await db
-          .update(inventory)
-          .set({ qty: newQty })
-          .where(
-            and(
-              eq(inventory.tavId, tavId),
-              eq(inventory.slot, snapshot.slot),
-            ),
-          );
-        snapshot.qty = newQty;
-      } else {
-        const slot = nextSlot++;
-        await db.insert(inventory).values({
-          tavId,
-          slot,
-          itemId,
-          qty: change,
-        });
-        state.set(itemId, { slot, qty: change });
-      }
-      continue;
-    }
-
-    if (!snapshot) {
-      continue;
-    }
-
-    const newQty = snapshot.qty + change;
-
-    // Drop depleted stacks entirely so they stop occupying slots.
-    if (newQty > 0) {
-      await db
-        .update(inventory)
-        .set({ qty: newQty })
-        .where(
-          and(
-            eq(inventory.tavId, tavId),
-            eq(inventory.slot, snapshot.slot),
-          ),
-        );
-      snapshot.qty = newQty;
-    } else {
-      await db
-        .delete(inventory)
-        .where(
-          and(
-            eq(inventory.tavId, tavId),
-            eq(inventory.slot, snapshot.slot),
-          ),
-        );
-      state.delete(itemId);
-    }
   }
 }
 
@@ -524,10 +419,7 @@ async function startBestPendingTask(
       continue;
     }
 
-    if (
-      definition.priority === best.priority &&
-      createdAt < best.createdAt
-    ) {
+    if (definition.priority === best.priority && createdAt < best.createdAt) {
       best = { row, priority: definition.priority, createdAt };
     }
   }

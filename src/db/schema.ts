@@ -285,6 +285,7 @@ export const tav = pgTable(
     xp: integer("xp").notNull().default(0),
     xpLevel: smallint("xp_level").notNull().default(1),
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
     check("tav_hp_current_le_max", sql`${table.hpCurrent} <= ${table.hpMax}`),

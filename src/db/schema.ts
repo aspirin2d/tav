@@ -231,37 +231,146 @@ const labeledDefinitionSchema = z.object({
 
 export const TASK_TARGETLESS_KEY = "null";
 
+const completionEffectValueSchema = z.object({
+  tav_xp: z.int().optional(),
+  skill_xp: z.int().optional(),
+  inventory: z.record(z.string(), z.int()).optional(),
+});
+
+const completionEffectOverrideSchema = z.record(
+  slugSchema,
+  completionEffectValueSchema,
+);
+
+const completionEffectSchema = completionEffectValueSchema.extend({
+  target_overrides: completionEffectOverrideSchema.optional(),
+});
+
+type CompletionEffectValueInput = z.infer<typeof completionEffectValueSchema>;
+type CompletionEffectInput = z.infer<typeof completionEffectSchema>;
+
+type CompletionEffectValue = {
+  tavXp?: number;
+  skillXp?: number;
+  inventory?: Record<string, number>;
+};
+
+export type CompletionEffect = CompletionEffectValue & {
+  targetOverrides?: Record<string, CompletionEffectValue>;
+};
+
+function transformCompletionEffectValue(
+  value: CompletionEffectValueInput | undefined,
+): CompletionEffectValue | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const result: CompletionEffectValue = {};
+
+  if (typeof value.tav_xp === "number") {
+    result.tavXp = value.tav_xp;
+  }
+
+  if (typeof value.skill_xp === "number") {
+    result.skillXp = value.skill_xp;
+  }
+
+  if (value.inventory) {
+    const entries = Object.entries(value.inventory).filter(([, qty]) => qty !== 0);
+    if (entries.length > 0) {
+      result.inventory = Object.fromEntries(entries);
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function transformCompletionEffect(
+  effect: CompletionEffectInput | undefined,
+): CompletionEffect | undefined {
+  if (!effect) {
+    return undefined;
+  }
+
+  const { target_overrides, ...rest } = effect;
+  const base = transformCompletionEffectValue(rest);
+
+  const overrides = target_overrides
+    ? Object.fromEntries(
+        Object.entries(
+          target_overrides as Record<string, CompletionEffectValueInput>,
+        )
+          .map(([targetId, value]) => {
+            const transformed = transformCompletionEffectValue(value);
+            return transformed ? [targetId, transformed] : null;
+          })
+          .filter((entry): entry is [string, CompletionEffectValue] => entry !== null),
+      )
+    : undefined;
+
+  const hasOverrides = overrides && Object.keys(overrides).length > 0;
+
+  if (!base && !hasOverrides) {
+    return undefined;
+  }
+
+  if (hasOverrides) {
+    return base ? { ...base, targetOverrides: overrides } : { targetOverrides: overrides };
+  }
+
+  return base;
+}
+
 const rawSkillDefinitionSchema = labeledDefinitionSchema.extend({
   priority: z.int().min(1).max(9).default(5),
   duration: z.int().min(1500).max(5000).default(2000),
-  target_ids: z.array(slugSchema).default([]),
+  targets: z.array(slugSchema).default([]),
   add_requirements: z.array(requirementSchema).default([]),
   execute_requirements: z.array(requirementSchema).default([]),
+  completion_effect: completionEffectSchema.optional(),
 });
 
 export const skillDefinitionSchema = rawSkillDefinitionSchema.transform(
-  ({ target_ids, add_requirements, execute_requirements, ...rest }) => ({
+  ({
+    targets,
+    add_requirements,
+    execute_requirements,
+    completion_effect,
+    ...rest
+  }) => ({
     ...rest,
-    targetIds: target_ids,
+    targetIds: targets,
     addRequirements: add_requirements,
     executeRequirements: execute_requirements,
+    completionEffect: transformCompletionEffect(completion_effect),
   }),
 );
 
-export const skillTargetDefinitionSchema = labeledDefinitionSchema
+export const targetDefinitionSchema = labeledDefinitionSchema
   .extend({
     add_requirements: z.array(requirementSchema).default([]),
     execute_requirements: z.array(requirementSchema).default([]),
+    completion_effect: completionEffectValueSchema.optional(),
+    skills: z.array(slugSchema).default([]),
   })
-  .transform(({ add_requirements, execute_requirements, ...rest }) => ({
+  .transform(({
+    add_requirements,
+    execute_requirements,
+    completion_effect,
+    skills,
+    ...rest
+  }) => ({
     ...rest,
     addRequirements: add_requirements,
     executeRequirements: execute_requirements,
+    completionEffect: transformCompletionEffectValue(completion_effect),
+    skills,
   }));
 
 export type AbilityScores = z.infer<typeof abilityScoresSchema>;
 export type SkillDefinition = z.infer<typeof skillDefinitionSchema>;
-export type SkillTargetDefinition = z.infer<typeof skillTargetDefinitionSchema>;
+export type TargetDefinition = z.infer<typeof targetDefinitionSchema>;
 
 // ---------------------------------------------------------------------------
 // Tables

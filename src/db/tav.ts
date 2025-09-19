@@ -4,7 +4,7 @@ import type { PgliteDatabase } from "drizzle-orm/pglite";
 import {
   DEFAULT_TAV_ABILITY_SCORES,
   SKILL_DEFINITIONS,
-  SKILL_TARGET_DEFINITIONS,
+  TARGET_DEFINITIONS,
 } from "../config.js";
 
 import {
@@ -15,7 +15,7 @@ import {
   tav,
   TASK_TARGETLESS_KEY,
   type RequirementEvaluationContext,
-  type SkillTargetDefinition,
+  type TargetDefinition,
 } from "./schema.js";
 import * as schema from "./schema.js";
 
@@ -40,6 +40,7 @@ export type CanExecuteTaskInput = {
   skillId: string;
   targetId?: string | null;
   context?: RequirementEvaluationContext;
+  baseContext?: RequirementEvaluationContext;
 };
 
 export async function createTav(
@@ -115,7 +116,7 @@ export async function addTask(
     throw new Error(`Skill ${input.skillId} requirements not met`);
   }
 
-  let targetDefinition = SKILL_TARGET_DEFINITIONS.find((definition) => {
+  let targetDefinition = TARGET_DEFINITIONS.find((definition) => {
     return definition.id === targetId;
   });
 
@@ -129,6 +130,14 @@ export async function addTask(
 
   if (!targetDefinition) {
     targetDefinition = targetlessTargetDefinition();
+  }
+
+  if (
+    targetId !== TASK_TARGETLESS_KEY &&
+    targetDefinition.skills.length > 0 &&
+    !targetDefinition.skills.includes(input.skillId)
+  ) {
+    throw new Error(`Skill ${input.skillId} cannot target id: ${targetId}`);
   }
 
   if (!evaluateRequirements(targetDefinition.addRequirements, context)) {
@@ -152,13 +161,15 @@ export async function addTask(
   return createdTask;
 }
 
-function targetlessTargetDefinition(): SkillTargetDefinition {
+function targetlessTargetDefinition(): TargetDefinition {
   return {
     id: TASK_TARGETLESS_KEY,
     name: "targetless",
     description: "",
     addRequirements: [],
     executeRequirements: [],
+    skills: [],
+    completionEffect: undefined,
   };
 }
 
@@ -166,37 +177,29 @@ async function buildRequirementContext(
   db: DatabaseClient,
   tavId: number,
 ): Promise<RequirementEvaluationContext> {
-  const [tavRow] = await db
-    .select({
-      abilityScores: tav.abilityScores,
-      flags: tav.flags,
-    })
-    .from(tav)
-    .where(eq(tav.id, tavId))
-    .limit(1);
+  const tavRow = await db.query.tav.findFirst({
+    where: eq(tav.id, tavId),
+    columns: { abilityScores: true, flags: true },
+    with: {
+      skills: { columns: { id: true, xpLevel: true } },
+      inventory: { columns: { itemId: true, qty: true } },
+    },
+  });
 
-  const abilityScores = tavRow?.abilityScores ?? DEFAULT_TAV_ABILITY_SCORES;
+  const abilityScores =
+    tavRow?.abilityScores ?? DEFAULT_TAV_ABILITY_SCORES;
+
   const rawFlags = (tavRow?.flags ?? []) as unknown;
   const flagArray = Array.isArray(rawFlags) ? (rawFlags as string[]) : [];
   const tavFlags = new Set<string>(flagArray);
 
-  const skillRows = await db
-    .select({ id: skill.id, xpLevel: skill.xpLevel })
-    .from(skill)
-    .where(eq(skill.tavId, tavId));
-
   const skillLevels: Record<string, number> = {};
-  for (const row of skillRows) {
+  for (const row of tavRow?.skills ?? []) {
     skillLevels[row.id] = Number(row.xpLevel ?? 0);
   }
 
-  const inventoryRows = await db
-    .select({ itemId: inventory.itemId, qty: inventory.qty })
-    .from(inventory)
-    .where(eq(inventory.tavId, tavId));
-
   const inventoryTotals: Record<string, number> = {};
-  for (const row of inventoryRows) {
+  for (const row of tavRow?.inventory ?? []) {
     inventoryTotals[row.itemId] =
       (inventoryTotals[row.itemId] ?? 0) + Number(row.qty ?? 0);
   }
@@ -319,6 +322,13 @@ function mergeIterables(
   return result;
 }
 
+export async function loadRequirementContext(
+  db: DatabaseClient,
+  tavId: number,
+): Promise<RequirementEvaluationContext> {
+  return buildRequirementContext(db, tavId);
+}
+
 export async function canExecuteTask(
   db: DatabaseClient,
   input: CanExecuteTaskInput,
@@ -346,12 +356,20 @@ export async function canExecuteTask(
     return false;
   }
 
-  let targetDefinition = SKILL_TARGET_DEFINITIONS.find((definition) => {
+  let targetDefinition = TARGET_DEFINITIONS.find((definition) => {
     return definition.id === targetId;
   });
 
   if (!targetDefinition) {
     targetDefinition = targetlessTargetDefinition();
+  }
+
+  if (
+    targetId !== TASK_TARGETLESS_KEY &&
+    targetDefinition.skills.length > 0 &&
+    !targetDefinition.skills.includes(input.skillId)
+  ) {
+    return false;
   }
 
   return evaluateRequirements(targetDefinition.executeRequirements, context);

@@ -13,7 +13,7 @@ id = "logging"
 name = "Logging"
 description = "logging the wood"
 priority = 5
-target_ids = ["small_tree", "big_tree"]
+targets = ["small_tree", "big_tree"]
 add_requirements = []
 execute_requirements = [
   { op = "ability_min", ability = "str", value = 10 },
@@ -24,14 +24,14 @@ execute_requirements = [
 id = "wood_craft"
 name = "Wood Craft"
 description = "Craft the wood"
-priority = 5
-target_ids = ["plank"]
+priority = 6
+targets = ["plank"]
 add_requirements = [
   { op = "skill_level_min", skillId = "logging", level = 2 },
   { op = "flag_present", flagId = "sawmill_ready" },
 ]
 execute_requirements = [
-  { op = "item_required", itemId = "log", quantity = 1 },
+  { op = "item_required", itemId = "log", quantity = 2 },
 ]
 
 [[skills]]
@@ -39,7 +39,7 @@ id = "idle"
 name = "Idle"
 description = "Do nothing"
 priority = 5
-target_ids = ["null"]
+targets = ["null"]
 add_requirements = []
 execute_requirements = []
 
@@ -48,7 +48,7 @@ id = "survey"
 name = "Survey"
 description = "Scout the surroundings"
 priority = 3
-target_ids = ["forest_edge", "mountain_pass"]
+targets = ["forest_edge", "mountain_pass"]
 add_requirements = []
 execute_requirements = [
   { op = "or", requirements = [
@@ -58,7 +58,7 @@ execute_requirements = [
 ]
 
 
-[[skill_targets]]
+[[targets]]
 id = "small_tree"
 name = "Small tree"
 description = "a small tree"
@@ -66,8 +66,10 @@ add_requirements = [
   { op = "flag_present", flagId = "forest_access" },
 ]
 execute_requirements = []
+skills = ["logging", "survey"]
+completion_effect = { tav_xp = 3, skill_xp = 10, inventory = { log = 1 } }
 
-[[skill_targets]]
+[[targets]]
 id = "big_tree"
 name = "Big tree"
 description = "a towering tree"
@@ -75,8 +77,10 @@ add_requirements = []
 execute_requirements = [
   { op = "ability_min", ability = "str", value = 12 },
 ]
+skills = ["logging"]
+completion_effect = { tav_xp = 4, skill_xp = 12, inventory = { log = 2 } }
 
-[[skill_targets]]
+[[targets]]
 id = "plank"
 name = "Plank"
 description = "a wooden plank"
@@ -84,8 +88,10 @@ add_requirements = [
   { op = "flag_present", flagId = "sawmill_ready" },
 ]
 execute_requirements = []
+skills = ["wood_craft"]
+completion_effect = { skill_xp = 15, inventory = { log = -2, plank = 1 } }
 
-[[skill_targets]]
+[[targets]]
 id = "forest_edge"
 name = "Forest edge"
 description = "a dense treeline"
@@ -96,8 +102,10 @@ execute_requirements = [
     { op = "item_required", itemId = "torch", quantity = 1 },
   ] },
 ]
+skills = ["survey"]
+completion_effect = { tav_xp = 5 }
 
-[[skill_targets]]
+[[targets]]
 id = "mountain_pass"
 name = "Mountain pass"
 description = "a steep mountain pass"
@@ -107,3 +115,5 @@ add_requirements = [
 execute_requirements = [
   { op = "custom", name = "weather_clear" },
 ]
+skills = ["survey"]
+completion_effect = { tav_xp = 7 }

@@ -4,6 +4,7 @@ import type { PgliteDatabase } from "drizzle-orm/pglite";
 import { inventory } from "../db/schema.js";
 import * as schema from "../db/schema.js";
 import { requireItemDefinition } from "./items.js";
+import { DEfAULT_STACK_LIMIT } from "../config.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -26,64 +27,66 @@ export async function moveInventoryItem(
   if (fromSlot < 0 || !Number.isInteger(fromSlot)) {
     throw new Error(`Invalid fromSlot: ${fromSlot}`);
   }
-  if (!Number.isInteger(toSlot)) {
+  if (toSlot < 0 || !Number.isInteger(toSlot)) {
     throw new Error(`Invalid toSlot: ${toSlot}`);
   }
 
-  const rows = (await listInventory(db, tavId))
-    .map((row) => ({
-      slot: Number(row.slot ?? 0),
-      itemId: row.itemId,
-      qty: Number(row.qty ?? 0),
-    }))
-    .sort((a, b) => a.slot - b.slot);
+  // Load current inventory keyed by slot (no ordering assumptions)
+  const rows = await listInventory(db, tavId);
+  const bySlot = new Map<number, { itemId: string; qty: number }>();
+  for (const r of rows) {
+    bySlot.set(Number(r.slot), { itemId: r.itemId, qty: Number(r.qty) });
+  }
 
-  const fromIndex = rows.findIndex((row) => row.slot === fromSlot);
-
-  if (fromIndex === -1) {
+  const from = bySlot.get(fromSlot);
+  if (!from) {
     throw new Error(`No inventory item found in slot ${fromSlot}`);
   }
 
-  const from = rows.splice(fromIndex, 1)[0]!;
-  const definition = requireItemDefinition(from.itemId);
-  const stackLimit = definition.stackLimit ?? Number.MAX_SAFE_INTEGER;
+  const to = bySlot.get(toSlot);
+  const def = requireItemDefinition(from.itemId);
+  const stackLimit = def.stackLimit ?? DEfAULT_STACK_LIMIT;
 
-  const clampedTo = Math.max(0, Math.min(toSlot, rows.length));
+  if (!to) {
+    // Empty destination: move the whole stack to toSlot
+    bySlot.delete(fromSlot);
+    bySlot.set(toSlot, { ...from });
+  } else if (to.itemId === from.itemId) {
+    // Same item: merge up to stack limit; keep leftover at original fromSlot
+    const total = to.qty + from.qty;
+    const merged = Math.min(stackLimit, total);
+    const leftover = total - merged;
 
-  if (rows.length === 0) {
-    rows.push(from);
-  } else if (clampedTo >= rows.length) {
-    rows.push(from);
-  } else {
-    const target = rows[clampedTo]!;
-    if (target.itemId === from.itemId) {
-      const total = target.qty + from.qty;
-      target.qty = Math.min(stackLimit, total);
-      const leftover = total - target.qty;
-      if (leftover > 0) {
-        rows.splice(clampedTo + 1, 0, { ...from, qty: leftover });
-      }
+    // Write merged stack at toSlot
+    bySlot.set(toSlot, { itemId: to.itemId, qty: merged });
+
+    if (leftover > 0) {
+      // Keep leftover at original slot (unchanged slot index)
+      bySlot.set(fromSlot, { itemId: from.itemId, qty: leftover });
     } else {
-      rows.splice(clampedTo, 0, from);
+      // Fully merged; clear original slot
+      bySlot.delete(fromSlot);
     }
+  } else {
+    // Different item at destination: swap slots
+    bySlot.set(fromSlot, { ...to });
+    bySlot.set(toSlot, { ...from });
   }
 
-  const sanitized = rows.filter((row) => row.qty > 0);
-
+  // Persist exactly the slot keys as-is (no compaction/reindexing)
   await db.delete(inventory).where(eq(inventory.tavId, tavId));
+  if (bySlot.size === 0) return;
 
-  if (sanitized.length === 0) {
-    return;
-  }
-
-  await db.insert(inventory).values(
-    sanitized.map((row, index) => ({
+  const values = Array.from(bySlot.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([slot, rec]) => ({
       tavId,
-      slot: index,
-      itemId: row.itemId,
-      qty: row.qty,
-    })),
-  );
+      slot,
+      itemId: rec.itemId,
+      qty: rec.qty,
+    }));
+
+  await db.insert(inventory).values(values);
 }
 
 export async function listInventory(
@@ -112,18 +115,15 @@ export async function applyInventoryDelta(
   db: DatabaseClient,
   tavId: number,
   deltas: InventoryDelta,
-  options: ApplyDeltaOptions = {},
+  options: ApplyDeltaOptions = { strict: true },
 ): Promise<void> {
   const entries = Object.entries(deltas).filter(([, value]) => value !== 0);
+  if (entries.length === 0) return;
 
-  if (entries.length === 0) {
-    return;
-  }
-
+  // Load existing stacks; also track occupied slots
   let existing = await listInventory(db, tavId);
-
   const stacks = new Map<string, Array<{ slot: number; qty: number }>>();
-  let maxSlot = -1;
+  const occupied = new Set<number>();
 
   for (const row of existing) {
     const slot = Number(row.slot ?? 0);
@@ -131,11 +131,10 @@ export async function applyInventoryDelta(
     const list = stacks.get(row.itemId) ?? [];
     list.push({ slot, qty });
     stacks.set(row.itemId, list);
-    if (slot > maxSlot) {
-      maxSlot = slot;
-    }
+    occupied.add(slot);
   }
 
+  // Strict underflow check (item totals)
   if (options.strict) {
     const totals = getTotalsFromStacks(stacks);
     for (const [itemId, change] of entries) {
@@ -149,54 +148,57 @@ export async function applyInventoryDelta(
     }
   }
 
+  // Helper: find the smallest non-negative empty slot
+  const smallestEmptySlot = () => {
+    let s = 0;
+    while (occupied.has(s)) s += 1;
+    return s;
+  };
+
   for (const [itemId, rawChange] of entries) {
-    const definition = requireItemDefinition(itemId);
-    const stackLimit = definition.stackLimit ?? Number.MAX_SAFE_INTEGER;
-
+    const def = requireItemDefinition(itemId);
+    const stackLimit = def.stackLimit ?? DEfAULT_STACK_LIMIT;
     const change = Math.trunc(Number(rawChange));
-
     /* c8 ignore next */
-    if (!Number.isFinite(change) || change === 0) {
-      continue;
-    }
+    if (!Number.isFinite(change) || change === 0) continue;
 
     const stackList = stacks.get(itemId) ?? [];
 
     if (change > 0) {
+      // 1) Top off existing stacks
       let remaining = change;
 
       for (const stack of stackList) {
-        if (remaining <= 0) {
-          break;
-        }
+        if (remaining <= 0) break;
         const capacity = stackLimit - stack.qty;
-        if (capacity <= 0) {
-          continue;
-        }
+        if (capacity <= 0) continue;
+
         const add = Math.min(capacity, remaining);
         await db
           .update(inventory)
           .set({ qty: stack.qty + add })
           .where(
-            and(
-              eq(inventory.tavId, tavId),
-              eq(inventory.slot, stack.slot),
-            ),
+            and(eq(inventory.tavId, tavId), eq(inventory.slot, stack.slot)),
           );
+
         stack.qty += add;
         remaining -= add;
       }
 
+      // 2) Create new stacks at the smallest empty slots
       while (remaining > 0) {
         const chunk = Math.min(stackLimit, remaining);
-        const slot = ++maxSlot;
+        const slot = smallestEmptySlot();
+
         await db.insert(inventory).values({
           tavId,
           slot,
           itemId,
           qty: chunk,
         });
+
         stackList.push({ slot, qty: chunk });
+        occupied.add(slot);
         remaining -= chunk;
       }
 
@@ -204,10 +206,11 @@ export async function applyInventoryDelta(
       continue;
     }
 
+    // change < 0: remove from the last stacks first (LIFO)
     let remaining = Math.abs(change);
 
-    for (let index = stackList.length - 1; index >= 0 && remaining > 0; index -= 1) {
-      const stack = stackList[index]!;
+    for (let i = stackList.length - 1; i >= 0 && remaining > 0; i -= 1) {
+      const stack = stackList[i]!;
       const remove = Math.min(stack.qty, remaining);
       const newQty = stack.qty - remove;
 
@@ -216,22 +219,17 @@ export async function applyInventoryDelta(
           .update(inventory)
           .set({ qty: newQty })
           .where(
-            and(
-              eq(inventory.tavId, tavId),
-              eq(inventory.slot, stack.slot),
-            ),
+            and(eq(inventory.tavId, tavId), eq(inventory.slot, stack.slot)),
           );
         stack.qty = newQty;
       } else {
         await db
           .delete(inventory)
           .where(
-            and(
-              eq(inventory.tavId, tavId),
-              eq(inventory.slot, stack.slot),
-            ),
+            and(eq(inventory.tavId, tavId), eq(inventory.slot, stack.slot)),
           );
-        stackList.splice(index, 1);
+        stackList.splice(i, 1);
+        occupied.delete(stack.slot); // free this slot
       }
 
       remaining -= remove;
@@ -244,24 +242,7 @@ export async function applyInventoryDelta(
     stacks.set(itemId, stackList);
   }
 
-  existing = await listInventory(db, tavId);
-  const sanitized = existing.filter((row) => Number(row.qty ?? 0) > 0);
-  sanitized.sort((a, b) => Number(a.slot ?? 0) - Number(b.slot ?? 0));
-
-  for (let index = 0; index < sanitized.length; index += 1) {
-    const row = sanitized[index]!;
-    if (row.slot !== index) {
-      await db
-        .update(inventory)
-        .set({ slot: index })
-        .where(
-          and(
-            eq(inventory.tavId, tavId),
-            eq(inventory.slot, row.slot),
-          ),
-        );
-    }
-  }
+  // NOTE: No reindexing/compaction here — slots are preserved.
 }
 
 function getTotalsFromStacks(
@@ -287,7 +268,7 @@ export async function setInventoryItems(
     .filter(([, qty]) => Number.isFinite(qty) && Number(qty) > 0)
     .flatMap(([itemId, qty]) => {
       const definition = requireItemDefinition(itemId);
-      const stackLimit = definition.stackLimit ?? Number.MAX_SAFE_INTEGER;
+      const stackLimit = definition.stackLimit ?? DEfAULT_STACK_LIMIT;
       const chunks: Array<{ itemId: string; qty: number }> = [];
       let remaining = Math.trunc(Number(qty));
       while (remaining > 0) {

@@ -1,4 +1,5 @@
 [defaults]
+stack_limit = 99
 
 [defaults.ability_scores]
 str = 10

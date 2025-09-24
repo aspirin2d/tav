@@ -19,6 +19,7 @@ import {
   type RequirementEvaluationContext,
 } from "../db/schema.js";
 import { applyInventoryDelta, type InventoryDelta } from "./inventory.js";
+import { getTavWithRelations } from "./tav.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -81,19 +82,11 @@ export async function tickTask(
   const tavId = options.tavId;
 
   // Snapshot (read-only)
-  const tavRow = await db.query.tav.findFirst({
-    with: {
-      skills: true,
-      tasks: true,
-      inventory: true,
-    },
-    where: eq(tav.id, tavId),
-  });
-
+  const tavRow = await getTavWithRelations(db, tavId);
   if (!tavRow) throw new Error("character not found");
 
   // Pre-load requirement base context once (stable snapshot)
-  const abilityScores = tavRow.abilityScores ?? DEFAULT_TAV_ABILITY_SCORES;
+  const abilityScores = tavRow.abilityScores;
 
   const rawFlags = (tavRow.flags ?? []) as unknown;
   const flagArray = Array.isArray(rawFlags) ? (rawFlags as string[]) : [];

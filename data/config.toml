@@ -1,6 +1,8 @@
 [defaults]
 stack_limit = 99
 max_loop_limit = 60
+tav_level_thresholds = [0, 50, 150, 300, 600]
+skill_level_thresholds = [0, 10, 20, 40, 80]
 
 [defaults.ability_scores]
 str = 10
@@ -98,6 +100,53 @@ priority = 5
 targets = ["null"]
 add_requirements = []
 execute_requirements = []
+
+[[skills]]
+id = "meditate"
+name = "Meditate"
+description = "Focus to gain insight"
+priority = 5
+targets = ["null"]
+add_requirements = []
+execute_requirements = []
+completion_effect = { tav_xp = 60 }
+
+[[skills]]
+id = "scribe"
+name = "Scribe"
+description = "Write records, requires experience"
+priority = 6
+targets = ["null"]
+add_requirements = []
+execute_requirements = [ { op = "tav_level_min", level = 2 } ]
+
+[[skills]]
+id = "scribe_pro"
+name = "Scribe Pro"
+description = "Advanced scribing unlocked by logging skill level"
+priority = 7
+targets = ["null"]
+add_requirements = []
+execute_requirements = [ { op = "skill_level_min", skillId = "logging", level = 3 } ]
+
+[[skills]]
+id = "self_train"
+name = "Self Train"
+description = "Train yourself; requires own level >= 2"
+priority = 5
+targets = ["null"]
+add_requirements = []
+execute_requirements = [ { op = "skill_level_min", skillId = "self_train", level = 2 } ]
+completion_effect = { skill_xp = 10 }
+
+[[skills]]
+id = "scribe_elite"
+name = "Scribe Elite"
+description = "Senior scribe requiring tav level 2"
+priority = 7
+targets = ["null"]
+add_requirements = []
+execute_requirements = [ { op = "tav_level_min", level = 2 } ]
 
 [[skills]]
 id = "survey"

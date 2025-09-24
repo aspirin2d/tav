@@ -36,6 +36,10 @@ export type Requirement =
       value: number;
     }
   | {
+      op: "tav_level_min";
+      level: number;
+    }
+  | {
       op: "skill_level_min";
       skillId: string;
       level: number;
@@ -74,6 +78,10 @@ export const requirementSchema: z.ZodType<Requirement> = z.lazy(() =>
       value: z.int().min(0).max(30),
     }),
     z.object({
+      op: z.literal("tav_level_min"),
+      level: z.int().min(1),
+    }),
+    z.object({
       op: z.literal("skill_level_min"),
       skillId: slugSchema,
       level: z.int().min(1),
@@ -108,8 +116,9 @@ export const requirementSchema: z.ZodType<Requirement> = z.lazy(() =>
 
 export type RequirementEvaluationContext = {
   abilities?: Partial<Record<(typeof abilityIds)[number], number>>;
+  tavLevel?: number;
   skillLevels?: Record<string, number>;
-  inventory?: Record<string, number> | Map<string, number>;
+  inventory?: Record<string, number>;
   flags?: Iterable<string>;
   customChecks?: Record<
     string,
@@ -137,6 +146,10 @@ export function evaluateRequirements(
       }
       case "skill_level_min": {
         const level = context.skillLevels?.[requirement.skillId] ?? 0;
+        return level >= requirement.level;
+      }
+      case "tav_level_min": {
+        const level = context.tavLevel ?? 1;
         return level >= requirement.level;
       }
       case "item_required": {
@@ -178,10 +191,6 @@ function readInventory(
 ): number {
   if (!inventory) {
     return 0;
-  }
-
-  if (inventory instanceof Map) {
-    return inventory.get(itemId) ?? 0;
   }
 
   return inventory[itemId] ?? 0;

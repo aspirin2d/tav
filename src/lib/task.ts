@@ -1,4 +1,4 @@
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 
 import {
@@ -6,6 +6,9 @@ import {
   MAX_LOOP_LIMIT,
   SKILL_DEFINITIONS,
   TARGET_DEFINITIONS,
+  SKILL_LEVEL_THRESHOLDS,
+  TAV_LEVEL_THRESHOLDS,
+  computeLevel,
 } from "../config.js";
 import * as schema from "../db/schema.js";
 import {
@@ -26,7 +29,7 @@ export type TaskKey = {
 };
 
 export type TickOptions = {
-  tavId?: number;
+  tavId: number;
   now?: Date;
   lastTickAt?: Date;
   context?: RequirementEvaluationContext;
@@ -72,14 +75,10 @@ const TARGET_DEFINITION_MAP = new Map(
  */
 export async function tickTask(
   db: DatabaseClient,
-  options: TickOptions = {},
+  options: TickOptions,
 ): Promise<TickResult> {
   const now = options.now ?? new Date();
-  const tavId = await resolveTavId(db, options.tavId);
-
-  if (tavId === null) {
-    return emptyResult();
-  }
+  const tavId = options.tavId;
 
   // Snapshot (read-only)
   const tavRow = await db.query.tav.findFirst({
@@ -101,8 +100,11 @@ export async function tickTask(
   const tavFlags = new Set<string>(flagArray);
 
   const skillLevels: Record<string, number> = {};
+  const skillXpTotals: Record<string, number> = {};
   for (const row of tavRow.skills ?? []) {
-    skillLevels[row.id] = Number(row.xpLevel ?? 0);
+    const xp = Number((row as any).xp ?? 0);
+    skillXpTotals[row.id] = xp;
+    skillLevels[row.id] = computeLevel(xp, SKILL_LEVEL_THRESHOLDS);
   }
 
   const inventoryTotals: Record<string, number> = {};
@@ -113,6 +115,7 @@ export async function tickTask(
 
   let requirementContext: RequirementEvaluationContext = {
     abilities: abilityScores,
+    tavLevel: computeLevel(Number(tavRow.xp ?? 0), TAV_LEVEL_THRESHOLDS),
     skillLevels,
     inventory: inventoryTotals,
     flags: tavFlags,
@@ -137,6 +140,10 @@ export async function tickTask(
     inventoryDelta: {} as Record<string, number>,
   };
 
+  // Virtual XP trackers to recompute levels within the current window
+  let virtualTavXp = Number(tavRow.xp ?? 0);
+  const virtualSkillXp: Record<string, number> = { ...skillXpTotals };
+
   let loopCount = 0;
 
   // loop for advancing time cursor
@@ -152,7 +159,9 @@ export async function tickTask(
       const skill = getSkillDefinition(executing.skillId);
       if (!skill) throw new Error("skill not found: " + executing.skillId);
 
-      const startedAt = executing.startedAt ?? cursor;
+      const startedAt = executing.startedAt;
+      if (!startedAt)
+        throw new Error("startedAt is not set for task:" + taskKey(executing));
       const deadline = new Date(startedAt.getTime() + skill.duration);
 
       if (now < deadline) {
@@ -171,12 +180,21 @@ export async function tickTask(
       if (effect) {
         if (effect.tavXp) {
           context.tavXpDelta += effect.tavXp;
-          // TODO: update tav xp level
+          virtualTavXp += effect.tavXp;
+          requirementContext.tavLevel = computeLevel(
+            virtualTavXp,
+            TAV_LEVEL_THRESHOLDS,
+          );
         }
         if (effect.skillXp) {
           context.skillXpDelta[executing.skillId] =
             (context.skillXpDelta[executing.skillId] ?? 0) + effect.skillXp;
-          // TODO: update skill xp level
+          virtualSkillXp[executing.skillId] =
+            (virtualSkillXp[executing.skillId] ?? 0) + effect.skillXp;
+          requirementContext.skillLevels![executing.skillId] = computeLevel(
+            virtualSkillXp[executing.skillId]!,
+            SKILL_LEVEL_THRESHOLDS,
+          );
         }
         if (effect.inventory) {
           for (const [itemId, delta] of Object.entries(effect.inventory)) {
@@ -230,6 +248,7 @@ export async function tickTask(
         )
       )
         continue;
+
       if (
         targetDef &&
         !schema.evaluateRequirements(
@@ -341,11 +360,6 @@ function addToInventoryContext(
 ): RequirementEvaluationContext["inventory"] {
   if (!inventory) {
     return { [itemId]: delta };
-  }
-
-  if (inventory instanceof Map) {
-    inventory.set(itemId, (inventory.get(itemId) ?? 0) + delta);
-    return inventory;
   }
 
   inventory[itemId] = (inventory[itemId] ?? 0) + delta;
@@ -479,19 +493,5 @@ function taskKey(record: {
   };
 }
 
-async function resolveTavId(
-  db: DatabaseClient,
-  supplied: number | undefined,
-): Promise<number | null> {
-  if (typeof supplied === "number") {
-    return supplied;
-  }
-
-  const rows = await db
-    .select({ tavId: task.tavId })
-    .from(task)
-    .where(or(eq(task.status, "pending"), eq(task.status, "executing")))
-    .limit(1);
-
-  return rows[0]?.tavId ?? null;
-}
+// Expose selected helpers for tests
+export { addToInventoryContext, mergeCompletionEffects };

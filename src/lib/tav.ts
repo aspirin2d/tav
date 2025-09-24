@@ -5,6 +5,9 @@ import {
   DEFAULT_TAV_ABILITY_SCORES,
   SKILL_DEFINITIONS,
   TARGET_DEFINITIONS,
+  SKILL_LEVEL_THRESHOLDS,
+  TAV_LEVEL_THRESHOLDS,
+  computeLevel,
 } from "../config.js";
 
 import * as schema from "../db/schema.js";
@@ -32,14 +35,6 @@ export type AddTaskInput = {
   skillId: string;
   targetId?: string | null;
   context?: RequirementEvaluationContext;
-};
-
-export type CanExecuteTaskInput = {
-  tavId: number;
-  skillId: string;
-  targetId?: string | null;
-  context?: RequirementEvaluationContext;
-  baseContext?: RequirementEvaluationContext;
 };
 
 export async function createTav(
@@ -180,7 +175,7 @@ async function buildRequirementContext(
     where: eq(tav.id, tavId),
     columns: { abilityScores: true, flags: true },
     with: {
-      skills: { columns: { id: true, xpLevel: true } },
+      skills: { columns: { id: true, xp: true } },
       inventory: { columns: { itemId: true, qty: true } },
     },
   });
@@ -193,7 +188,8 @@ async function buildRequirementContext(
 
   const skillLevels: Record<string, number> = {};
   for (const row of tavRow?.skills ?? []) {
-    skillLevels[row.id] = Number(row.xpLevel ?? 0);
+    const xp = Number((row as any).xp ?? 0);
+    skillLevels[row.id] = computeLevel(xp, SKILL_LEVEL_THRESHOLDS);
   }
 
   const inventoryTotals: Record<string, number> = {};
@@ -204,6 +200,10 @@ async function buildRequirementContext(
 
   return {
     abilities: abilityScores,
+    tavLevel: computeLevel(
+      Number((tavRow as any)?.xp ?? 0),
+      TAV_LEVEL_THRESHOLDS,
+    ),
     skillLevels,
     inventory: inventoryTotals,
     flags: tavFlags,
@@ -319,50 +319,4 @@ export async function loadRequirementContext(
   tavId: number,
 ): Promise<RequirementEvaluationContext> {
   return buildRequirementContext(db, tavId);
-}
-
-export async function canExecuteTask(
-  db: DatabaseClient,
-  input: CanExecuteTaskInput,
-): Promise<boolean> {
-  const skillDefinition = SKILL_DEFINITIONS.find((definition) => {
-    return definition.id === input.skillId;
-  });
-
-  if (!skillDefinition) {
-    throw new Error(`Unknown skill id: ${input.skillId}`);
-  }
-
-  const targetId = input.targetId ?? TASK_TARGETLESS_KEY;
-
-  const isAllowedTarget = skillDefinition.targetIds.includes(targetId);
-
-  if (!isAllowedTarget) {
-    throw new Error(`Skill ${input.skillId} cannot target id: ${targetId}`);
-  }
-
-  const baseContext = await buildRequirementContext(db, input.tavId);
-  const context = mergeRequirementContexts(baseContext, input.context);
-
-  if (!evaluateRequirements(skillDefinition.executeRequirements, context)) {
-    return false;
-  }
-
-  let targetDefinition = TARGET_DEFINITIONS.find((definition) => {
-    return definition.id === targetId;
-  });
-
-  if (!targetDefinition) {
-    targetDefinition = targetlessTargetDefinition();
-  }
-
-  if (
-    targetId !== TASK_TARGETLESS_KEY &&
-    targetDefinition.skills.length > 0 &&
-    !targetDefinition.skills.includes(input.skillId)
-  ) {
-    return false;
-  }
-
-  return evaluateRequirements(targetDefinition.executeRequirements, context);
 }

@@ -53,6 +53,12 @@ describe("task ticking", () => {
     expect(outcome.failed).toHaveLength(0);
   });
 
+  it("throws when tav is not found", async () => {
+    await expect(
+      tickTask(db, { tavId: 9999, now: new Date(0) }),
+    ).rejects.toThrow(/character not found/);
+  });
+
   it("throws when the executing task references an unknown skill", async () => {
     const tav = await createTav(db, { name: "UnknownSkillExecuting" });
 
@@ -74,6 +80,25 @@ describe("task ticking", () => {
         now: new Date(3000),
       }),
     ).rejects.toThrow(/skill not found: ghost/);
+  });
+
+  it("throws when executing task has no startedAt", async () => {
+    const created = await createTav(db, { name: "MissingStartedAt" });
+
+    // Ensure the skill row exists (known skill from config)
+    await db.insert(skill).values({ tavId: created.id, id: "idle" });
+
+    // Insert executing task without startedAt
+    await db.insert(task).values({
+      tavId: created.id,
+      skillId: "idle",
+      targetId: schema.TASK_TARGETLESS_KEY,
+      status: "executing",
+    });
+
+    await expect(
+      tickTask(db, { tavId: created.id, lastTickAt: new Date(0), now: new Date(10) }),
+    ).rejects.toThrow(/startedAt is not set for task/);
   });
 
   it("throws when a pending task targets a disallowed id", async () => {
@@ -136,6 +161,36 @@ describe("task ticking", () => {
     });
   });
 
+  it("builds requirement context from DB state only", async () => {
+    const created = await createTav(db, { name: "CtxFromDBOnly" });
+
+    // DB provides both the forest access for target and scout_ready for skill execute
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access", "scout_ready"] })
+      .where(eq(tavTable.id, created.id));
+
+    // Provide the torch via DB inventory
+    await db.insert(inventory).values({
+      tavId: created.id,
+      slot: 1,
+      itemId: "torch",
+      qty: 1,
+    });
+
+    await addTask(db, {
+      tavId: created.id,
+      skillId: "survey",
+      targetId: "forest_edge",
+    });
+
+    const outcome = await tickTask(db, { tavId: created.id, lastTickAt: new Date(0), now: new Date(100) });
+
+    expect(outcome.started).toEqual([
+      { tavId: created.id, skillId: "survey", targetId: "forest_edge" },
+    ]);
+  });
+
   it("leaves ineligible pending tasks untouched when requirements are unmet", async () => {
     const tav = await createTav(db, { name: "UnmetRequirements" });
 
@@ -157,6 +212,34 @@ describe("task ticking", () => {
     expect(outcome.completed).toHaveLength(0);
   });
 
+  it("uses override requirement context when provided", async () => {
+    const created = await createTav(db, { name: "CtxMerge" });
+
+    // DB has no torch; only forest_access so target add requirements are satisfied when needed
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, created.id));
+
+    await addTask(db, {
+      tavId: created.id,
+      skillId: "survey",
+      targetId: "forest_edge",
+    });
+
+    // Provide scout_ready and forest_access flags and a torch via override context only
+    const outcome = await tickTask(db, {
+      tavId: created.id,
+      lastTickAt: new Date(0),
+      now: new Date(100),
+      context: { flags: new Set(["scout_ready", "forest_access"]), inventory: { torch: 1 } },
+    });
+
+    expect(outcome.started).toEqual([
+      { tavId: created.id, skillId: "survey", targetId: "forest_edge" },
+    ]);
+  });
+
   it("can start a craft using inventory provided via context only", async () => {
     const tav = await createTav(db, { name: "ContextInventory" });
 
@@ -166,7 +249,7 @@ describe("task ticking", () => {
       .where(eq(tavTable.id, tav.id));
 
     // Meet add requirements: logging level >= 2
-    await db.insert(skill).values({ tavId: tav.id, id: "logging", xpLevel: 3 });
+    await db.insert(skill).values({ tavId: tav.id, id: "logging", xp: 20 });
 
     await addTask(db, {
       tavId: tav.id,
@@ -187,32 +270,135 @@ describe("task ticking", () => {
     ]);
   });
 
-  it("auto-selects the tav when tavId is omitted", async () => {
-    const tav = await createTav(db, { name: "AutoPick" });
+  it("does not start when target execute requirements fail while skill passes", async () => {
+    const created = await createTav(db, { name: "TargetExecFail" });
 
+    // Make skill execute pass via scout_ready, but do not provide torch (target requirement)
     await db
       .update(tavTable)
-      .set({ flags: ["forest_access"] })
-      .where(eq(tavTable.id, tav.id));
+      .set({ flags: ["scout_ready", "forest_access"] })
+      .where(eq(tavTable.id, created.id));
 
     await addTask(db, {
-      tavId: tav.id,
-      skillId: "logging",
-      targetId: "small_tree",
+      tavId: created.id,
+      skillId: "survey",
+      targetId: "forest_edge",
     });
 
-    const outcome = await tickTask(db, {
+    const outcome = await tickTask(db, { tavId: created.id, lastTickAt: new Date(0), now: new Date(100) });
+
+    expect(outcome.started).toHaveLength(0);
+    expect(outcome.completed).toHaveLength(0);
+
+    const [row] = await db.select().from(task).where(eq(task.tavId, created.id));
+    expect(row.status).toBe("pending");
+  });
+
+  it("addToInventoryContext aggregates newly gained items to enable crafting in the same tick", async () => {
+    const t = await createTav(db, { name: "CtxAddAggregate" });
+
+    // Base: 1 log in DB, sawmill ready, forest access; logging level 3 so wood_craft add req passes
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access", "sawmill_ready"] })
+      .where(eq(tavTable.id, t.id));
+
+    await db.insert(skill).values({ tavId: t.id, id: "logging", xp: 20 });
+
+    // Inventory has only 1 log initially
+    await db.insert(inventory).values({ tavId: t.id, slot: 1, itemId: "log", qty: 1 });
+
+    // Queue logging then wood craft
+    await addTask(db, { tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    await addTask(db, { tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
       lastTickAt: new Date(0),
-      now: new Date(2000),
+      now: new Date(3000),
       context: { customChecks: { logging_allowed: true } },
     });
 
-    expect(outcome.started.length).toBeGreaterThanOrEqual(1);
-    expect(outcome.started[0]).toEqual({
-      tavId: tav.id,
-      skillId: "logging",
-      targetId: "small_tree",
+    // Logging completes once, then crafting starts immediately using updated requirement context (2 logs total)
+    expect(out.completed).toContainEqual({ tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    expect(out.started).toContainEqual({ tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+  });
+
+  it("addToInventoryContext works when requirementContext.inventory is undefined", async () => {
+    const t = await createTav(db, { name: "CtxInvUndefined" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access", "sawmill_ready"] })
+      .where(eq(tavTable.id, t.id));
+
+    await db.insert(skill).values({ tavId: t.id, id: "logging", xp: 20 });
+
+    // Queue one logging task and a craft; logging will recycle twice within the window
+    await addTask(db, { tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    await addTask(db, { tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(4000),
+      context: { inventory: undefined, customChecks: { logging_allowed: true } },
     });
+
+    // After two logging completions, crafting should start; proves inventory started undefined and was created/aggregated
+    expect(out.completed).toContainEqual({ tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    expect(out.started).toContainEqual({ tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+  });
+
+  it("addToInventoryContext works when requirementContext.inventory is null", async () => {
+    const t = await createTav(db, { name: "CtxInvNull" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access", "sawmill_ready"] })
+      .where(eq(tavTable.id, t.id));
+
+    await db.insert(skill).values({ tavId: t.id, id: "logging", xp: 20 });
+
+    // One logging task is enough; it will recycle twice
+    await addTask(db, { tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    await addTask(db, { tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(4000),
+      context: { inventory: null as any, customChecks: { logging_allowed: true } },
+    });
+
+    expect(out.completed).toContainEqual({ tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    expect(out.started).toContainEqual({ tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+  });
+
+  it("addToInventoryContext applies consumption so subsequent tasks remain ineligible in the same tick", async () => {
+    const t = await createTav(db, { name: "CtxConsume" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["sawmill_ready"] })
+      .where(eq(tavTable.id, t.id));
+
+    await db.insert(skill).values({ tavId: t.id, id: "logging", xp: 20 });
+
+    // Exactly enough logs for one craft
+    await db.insert(inventory).values({ tavId: t.id, slot: 1, itemId: "log", qty: 2 });
+
+    // Queue one craft; it should complete once and not immediately restart due to consumption
+    await addTask(db, { tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+
+    const out = await tickTask(db, { tavId: t.id, lastTickAt: new Date(0), now: new Date(3000) });
+
+    expect(out.completed).toContainEqual({ tavId: t.id, skillId: "wood_craft", targetId: "plank" });
+    // The same craft should not start a second time due to logs consumed via addToInventoryContext in the same tick
+    const startedCrafts = out.started.filter(
+      (k) => k.skillId === "wood_craft" && k.targetId === "plank",
+    );
+    expect(startedCrafts.length).toBe(1);
   });
 
   it("breaks cleanly when there are pending but ineligible tasks", async () => {
@@ -278,6 +464,94 @@ describe("task ticking", () => {
     expect(result.started).toEqual([
       { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
     ]);
+  });
+
+  it("uses tav level requirements within the same tick window", async () => {
+    const t = await createTav(db, { name: "TavLevelTick" });
+
+    // Queue meditate first (lower priority) and then scribe (higher priority but gated by tav level >= 2)
+    await addTask(db, { tavId: t.id, skillId: "meditate", targetId: null });
+    await addTask(db, { tavId: t.id, skillId: "scribe", targetId: null });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(3000),
+    });
+
+    // Meditate completes once and then scribe becomes eligible due to tav level rising to 2
+    expect(out.completed).toContainEqual({ tavId: t.id, skillId: "meditate", targetId: schema.TASK_TARGETLESS_KEY });
+    expect(out.started).toContainEqual({ tavId: t.id, skillId: "scribe", targetId: schema.TASK_TARGETLESS_KEY });
+  });
+
+  it("uses skill level requirements within the same tick window", async () => {
+    const t = await createTav(db, { name: "SkillLevelTick" });
+
+    // Allow logging add requirements (forest_access) and custom execute guard
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, t.id));
+
+    // Queue logging (will recycle to gain skill XP) and scribe_pro which requires logging level >= 3
+    await addTask(db, { tavId: t.id, skillId: "logging", targetId: "small_tree" });
+    await addTask(db, { tavId: t.id, skillId: "scribe_pro", targetId: null });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(5000),
+      context: { customChecks: { logging_allowed: true } },
+    });
+
+    // Two logging completions raise logging xp to 20 (level 3), enabling scribe_pro (higher priority)
+    expect(out.completed.filter((k) => k.skillId === "logging")).toHaveLength(2);
+    expect(out.started).toContainEqual({
+      tavId: t.id,
+      skillId: "scribe_pro",
+      targetId: schema.TASK_TARGETLESS_KEY,
+    });
+  });
+
+  it("self-referential skill_level_min allows repeated cycles when level is met", async () => {
+    const t = await createTav(db, { name: "SelfRef" });
+
+    // Seed self_train with xp that yields level 2 (>=10)
+    await db.insert(skill).values({ tavId: t.id, id: "self_train", xp: 10 });
+
+    await addTask(db, { tavId: t.id, skillId: "self_train", targetId: null });
+
+    const out = await tickTask(db, { tavId: t.id, lastTickAt: new Date(0), now: new Date(5000) });
+
+    // Duration=2000ms → expect two completions and two restarts within window
+    const completedSelf = out.completed.filter((k) => k.skillId === "self_train");
+    const startedSelf = out.started.filter((k) => k.skillId === "self_train");
+    expect(completedSelf.length).toBeGreaterThanOrEqual(2);
+    expect(startedSelf.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("when multiple tasks unlock simultaneously, picks highest priority first", async () => {
+    const t = await createTav(db, { name: "MultiUnlock" });
+
+    // Queue actions: meditate raises tav level; two gated tasks require tav level 2
+    await addTask(db, { tavId: t.id, skillId: "meditate", targetId: null });
+    await addTask(db, { tavId: t.id, skillId: "scribe", targetId: null });
+    await addTask(db, { tavId: t.id, skillId: "scribe_elite", targetId: null });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      // Enough for meditate to complete once, but not enough to finish a following task
+      now: new Date(2500),
+    });
+
+    // After meditate completes at t=2000, both scribe tasks unlock.
+    // Scheduler should start the higher-priority one (scribe_elite) first.
+    const started = out.started
+      .filter((k) => k.skillId === "scribe" || k.skillId === "scribe_elite")
+      .map((k) => k.skillId);
+    expect(started).toContain("scribe_elite");
+    expect(started).not.toContain("scribe");
   });
 
   // No state changes when nothing is queued.
@@ -430,7 +704,7 @@ describe("task ticking", () => {
       .set({ flags: ["forest_access", "sawmill_ready"] })
       .where(eq(tavTable.id, tav.id));
 
-    await db.insert(skill).values({ tavId: tav.id, id: "logging", xpLevel: 3 });
+    await db.insert(skill).values({ tavId: tav.id, id: "logging", xp: 20 });
 
     await addTask(db, {
       tavId: tav.id,

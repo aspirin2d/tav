@@ -171,6 +171,45 @@ describe("tav database helpers", () => {
     expect(newTask.targetId).toBe("plank");
   });
 
+  it("accepts an explicit task priority and persists it", async () => {
+    const created = await createTav(db, { name: "PriorityPersist" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, created.id));
+
+    const newTask = await addTask(db, {
+      tavId: created.id,
+      skillId: "logging",
+      targetId: "small_tree",
+      priority: 7,
+    });
+
+    expect(newTask.priority).toBe(7);
+
+    const [row] = await db.select().from(task).where(eq(task.tavId, created.id));
+    expect(row.priority).toBe(7);
+  });
+
+  it("rejects out-of-range task priority", async () => {
+    const created = await createTav(db, { name: "PriorityValidate" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, created.id));
+
+    await expect(
+      addTask(db, {
+        tavId: created.id,
+        skillId: "logging",
+        targetId: "small_tree",
+        priority: 10,
+      }),
+    ).rejects.toThrow(/priority must be between 1 and 9/);
+  });
+
   it("rejects targets not configured for the skill", async () => {
     const created = await createTav(db, { name: "Jaheira" });
 

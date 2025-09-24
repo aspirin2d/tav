@@ -466,6 +466,119 @@ describe("task ticking", () => {
     ]);
   });
 
+  it("for the same skill, per-task priority determines selection", async () => {
+    const t = await createTav(db, { name: "SameSkillPriority" });
+
+    // Allow survey targets and execution
+    const [row] = await db
+      .select()
+      .from(tavTable)
+      .where(eq(tavTable.id, t.id));
+
+    await db
+      .update(tavTable)
+      .set({
+        flags: ["forest_access", "scout_ready"],
+        abilityScores: { ...row.abilityScores, con: 11 }, // for mountain_pass add requirement
+      })
+      .where(eq(tavTable.id, t.id));
+
+    // Same skill (survey) but different targets and task priorities
+    await addTask(db, { tavId: t.id, skillId: "survey", targetId: "forest_edge", priority: 1 });
+    await addTask(db, { tavId: t.id, skillId: "survey", targetId: "mountain_pass", priority: 9 });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(100),
+      context: {
+        // forest_edge execute requires a torch; mountain_pass requires clear weather
+        inventory: { torch: 1 },
+        customChecks: { weather_clear: true },
+      },
+    });
+
+    expect(out.started[0]).toEqual({
+      tavId: t.id,
+      skillId: "survey",
+      targetId: "mountain_pass",
+    });
+  });
+
+  it("defaults to zero offset (5) and uses createdAt when tied for the same skill", async () => {
+    const t = await createTav(db, { name: "SameSkillTieBreak" });
+
+    // Permit both survey targets
+    const [row] = await db
+      .select()
+      .from(tavTable)
+      .where(eq(tavTable.id, t.id));
+
+    await db
+      .update(tavTable)
+      .set({
+        flags: ["forest_access", "scout_ready"],
+        abilityScores: { ...row.abilityScores, con: 11 },
+      })
+      .where(eq(tavTable.id, t.id));
+
+    // Insert forest_edge first (older createdAt), both with default priority (5)
+    await addTask(db, { tavId: t.id, skillId: "survey", targetId: "forest_edge" });
+    await addTask(db, { tavId: t.id, skillId: "survey", targetId: "mountain_pass" });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(100),
+      context: { inventory: { torch: 1 }, customChecks: { weather_clear: true } },
+    });
+
+    expect(out.started[0]).toEqual({
+      tavId: t.id,
+      skillId: "survey",
+      targetId: "forest_edge",
+    });
+  });
+
+  it("considers per-task priority when selecting next", async () => {
+    const t = await createTav(db, { name: "PerTaskPriority" });
+
+    // Satisfy add/execute requirements for both skills
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access", "scout_ready"] })
+      .where(eq(tavTable.id, t.id));
+
+    // Base priorities: logging=5, survey=3
+    // Boost survey (+4) and dampen logging (-4) so survey wins overall
+    await addTask(db, {
+      tavId: t.id,
+      skillId: "logging",
+      targetId: "small_tree",
+      priority: 1, // offset -4
+    });
+
+    await addTask(db, {
+      tavId: t.id,
+      skillId: "survey",
+      targetId: "forest_edge",
+      priority: 9, // offset +4
+    });
+
+    const out = await tickTask(db, {
+      tavId: t.id,
+      lastTickAt: new Date(0),
+      now: new Date(100),
+      context: { customChecks: { logging_allowed: true }, inventory: { torch: 1 } },
+    });
+
+    expect(out.started[0]).toEqual({
+      tavId: t.id,
+      skillId: "survey",
+      targetId: "forest_edge",
+    });
+  });
+
   it("uses tav level requirements within the same tick window", async () => {
     const t = await createTav(db, { name: "TavLevelTick" });
 

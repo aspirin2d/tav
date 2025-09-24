@@ -34,6 +34,7 @@ export type AddTaskInput = {
   tavId: number;
   skillId: string;
   targetId?: string | null;
+  priority?: number; // 1..9, default 5
   context?: RequirementEvaluationContext;
 };
 
@@ -149,10 +150,23 @@ export async function addTask(
       tavId: input.tavId,
       skillId: input.skillId,
       targetId,
+      ...(input.priority !== undefined
+        ? { priority: validatePriority(input.priority) }
+        : {}),
     })
     .returning();
 
   return createdTask;
+}
+
+function validatePriority(priority: number): number {
+  if (!Number.isInteger(priority)) {
+    throw new Error("Task priority must be an integer");
+  }
+  if (priority < 1 || priority > 9) {
+    throw new Error("Task priority must be between 1 and 9");
+  }
+  return priority;
 }
 
 function targetlessTargetDefinition(): TargetDefinition {

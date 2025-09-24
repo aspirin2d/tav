@@ -482,6 +482,8 @@ export const task = pgTable(
       .references(() => tav.id, { onDelete: "cascade" }),
     skillId: text("skill_id").notNull(),
     targetId: text("target_id").notNull(),
+    // Task-specific priority: 1..9, default 5
+    priority: smallint("priority").notNull().default(5),
     status: taskStatusEnum("status").notNull().default("pending"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     startedAt: timestamp("started_at"),
@@ -493,6 +495,10 @@ export const task = pgTable(
     uniqueIndex("uniq_task_executing")
       .on(table.tavId)
       .where(sql`${table.status} = 'executing'`),
+    check(
+      "task_priority_bounds",
+      sql`${table.priority} >= 1 AND ${table.priority} <= 9`,
+    ),
     foreignKey({
       name: "skill",
       columns: [table.skillId, table.tavId],

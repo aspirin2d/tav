@@ -2,11 +2,10 @@ import { and, eq, sql } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 
 import {
-  DEFAULT_TAV_ABILITY_SCORES,
   MAX_LOOP_LIMIT,
   SKILL_DEFINITIONS,
-  TARGET_DEFINITIONS,
   SKILL_LEVEL_THRESHOLDS,
+  TARGET_DEFINITIONS,
   TAV_LEVEL_THRESHOLDS,
   computeLevel,
 } from "../config.js";
@@ -251,9 +250,13 @@ export async function tickTask(
       )
         continue;
 
+      // Final evaluation = task.priority + skill.priority - 5
+      const taskPriority = (row as any).priority ?? 5;
+      const combinedPriority = skillDef.priority + taskPriority - 5;
+
       eligible.push({
         row,
-        priority: skillDef.priority,
+        priority: combinedPriority,
         createdAtMs: row.createdAt?.getTime() ?? 0,
       });
     }

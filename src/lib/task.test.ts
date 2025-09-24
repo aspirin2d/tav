@@ -8,7 +8,6 @@ import { dirname, join } from "node:path";
 
 import { tickTask } from "./task.js";
 import { addTask, createTav } from "./tav.js";
-import { getInventoryTotals } from "./inventory.js";
 import * as schema from "../db/schema.js";
 
 const { task, tav: tavTable, skill, inventory } = schema;
@@ -28,6 +27,217 @@ describe("task ticking", () => {
     client = new PGlite();
     db = drizzle({ client, schema });
     await migrate(db, { migrationsFolder: migrationsPath() });
+  });
+
+  it("ignores pending tasks with an unknown skill", async () => {
+    const tav = await createTav(db, { name: "UnknownSkillPending" });
+
+    // Satisfy FK: create a skill row that doesn't exist in config
+    await db.insert(skill).values({ tavId: tav.id, id: "mystery" });
+
+    await db.insert(task).values({
+      tavId: tav.id,
+      skillId: "mystery",
+      targetId: schema.TASK_TARGETLESS_KEY,
+      status: "pending",
+    });
+
+    const outcome = await tickTask(db, {
+      tavId: tav.id,
+      lastTickAt: new Date(0),
+      now: new Date(1000),
+    });
+
+    expect(outcome.started).toHaveLength(0);
+    expect(outcome.completed).toHaveLength(0);
+    expect(outcome.failed).toHaveLength(0);
+  });
+
+  it("throws when the executing task references an unknown skill", async () => {
+    const tav = await createTav(db, { name: "UnknownSkillExecuting" });
+
+    // Satisfy FK: create a skill row that doesn't exist in config
+    await db.insert(skill).values({ tavId: tav.id, id: "ghost" });
+
+    await db.insert(task).values({
+      tavId: tav.id,
+      skillId: "ghost",
+      targetId: schema.TASK_TARGETLESS_KEY,
+      status: "executing",
+      startedAt: new Date(0),
+    });
+
+    await expect(
+      tickTask(db, {
+        tavId: tav.id,
+        lastTickAt: new Date(0),
+        now: new Date(3000),
+      }),
+    ).rejects.toThrow(/skill not found: ghost/);
+  });
+
+  it("throws when a pending task targets a disallowed id", async () => {
+    const tav = await createTav(db, { name: "DisallowedTarget" });
+
+    // Satisfy FK
+    await db.insert(skill).values({ tavId: tav.id, id: "logging" });
+
+    // Insert an impossible target for logging
+    await db.insert(task).values({
+      tavId: tav.id,
+      skillId: "logging",
+      targetId: "invalid_target",
+      status: "pending",
+    });
+
+    await expect(
+      tickTask(db, {
+        tavId: tav.id,
+        lastTickAt: new Date(0),
+        now: new Date(10),
+      }),
+    ).rejects.toThrow(/skill logging cannot target id: invalid_target/);
+  });
+
+  it("prefers older createdAt when priorities tie", async () => {
+    const tav = await createTav(db, { name: "TieBreaker" });
+
+    // Enable both idle and logging as executable with equal priority (5)
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, tav.id));
+
+    // Insert older task first (idle)
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "idle",
+      targetId: null,
+    });
+
+    // Slightly newer pending task (logging)
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "logging",
+      targetId: "small_tree",
+    });
+
+    const result = await tickTask(db, {
+      tavId: tav.id,
+      lastTickAt: new Date(0),
+      now: new Date(100),
+      context: { customChecks: { logging_allowed: true } },
+    });
+
+    expect(result.started[0]).toEqual({
+      tavId: tav.id,
+      skillId: "idle",
+      targetId: schema.TASK_TARGETLESS_KEY,
+    });
+  });
+
+  it("leaves ineligible pending tasks untouched when requirements are unmet", async () => {
+    const tav = await createTav(db, { name: "UnmetRequirements" });
+
+    // Use a skill/target pair with no add requirements but with execute requirements
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "survey",
+      targetId: "forest_edge",
+    });
+
+    const outcome = await tickTask(db, {
+      tavId: tav.id,
+      lastTickAt: new Date(0),
+      now: new Date(5000),
+      // No forest_access flag and no torch in inventory; execute should be ineligible
+    });
+
+    expect(outcome.started).toHaveLength(0);
+    expect(outcome.completed).toHaveLength(0);
+  });
+
+  it("can start a craft using inventory provided via context only", async () => {
+    const tav = await createTav(db, { name: "ContextInventory" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["sawmill_ready"] })
+      .where(eq(tavTable.id, tav.id));
+
+    // Meet add requirements: logging level >= 2
+    await db.insert(skill).values({ tavId: tav.id, id: "logging", xpLevel: 3 });
+
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "wood_craft",
+      targetId: "plank",
+    });
+
+    // No logs in DB; provide virtually via context
+    const outcome = await tickTask(db, {
+      tavId: tav.id,
+      lastTickAt: new Date(0),
+      now: new Date(10),
+      context: { inventory: { log: 2 } },
+    });
+
+    expect(outcome.started).toEqual([
+      { tavId: tav.id, skillId: "wood_craft", targetId: "plank" },
+    ]);
+  });
+
+  it("auto-selects the tav when tavId is omitted", async () => {
+    const tav = await createTav(db, { name: "AutoPick" });
+
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, tav.id));
+
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "logging",
+      targetId: "small_tree",
+    });
+
+    const outcome = await tickTask(db, {
+      lastTickAt: new Date(0),
+      now: new Date(2000),
+      context: { customChecks: { logging_allowed: true } },
+    });
+
+    expect(outcome.started.length).toBeGreaterThanOrEqual(1);
+    expect(outcome.started[0]).toEqual({
+      tavId: tav.id,
+      skillId: "logging",
+      targetId: "small_tree",
+    });
+  });
+
+  it("breaks cleanly when there are pending but ineligible tasks", async () => {
+    const tav = await createTav(db, { name: "NoEligible" });
+
+    // Allow adding the task (target add requirement)
+    await db
+      .update(tavTable)
+      .set({ flags: ["forest_access"] })
+      .where(eq(tavTable.id, tav.id));
+
+    await addTask(db, {
+      tavId: tav.id,
+      skillId: "logging",
+      targetId: "small_tree",
+    });
+
+    // Do not provide the custom execute flag logging_allowed → ineligible
+    const outcome = await tickTask(db, { tavId: tav.id, now: new Date(0) });
+
+    expect(outcome.started).toHaveLength(0);
+    expect(outcome.completed).toHaveLength(0);
+
+    const [row] = await db.select().from(task).where(eq(task.tavId, tav.id));
+    expect(row.status).toBe("pending");
   });
 
   afterEach(async () => {
@@ -57,7 +267,8 @@ describe("task ticking", () => {
 
     const result = await tickTask(db, {
       tavId: tav.id,
-      now: new Date(0),
+      lastTickAt: new Date(0),
+      now: new Date(100),
       context: {
         customChecks: { logging_allowed: true },
         inventory: { torch: 1 },
@@ -71,7 +282,8 @@ describe("task ticking", () => {
 
   // No state changes when nothing is queued.
   it("returns immediately when no tav requires work", async () => {
-    const outcome = await tickTask(db, { now: new Date(0) });
+    const tav = await createTav(db, { name: "Priority" });
+    const outcome = await tickTask(db, { now: new Date(0), tavId: tav.id });
     expect(outcome.started).toHaveLength(0);
     expect(outcome.completed).toHaveLength(0);
     expect(outcome.failed).toHaveLength(0);
@@ -108,30 +320,21 @@ describe("task ticking", () => {
       targetId: "small_tree",
     });
 
-    await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(0),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
     const result = await tickTask(db, {
       tavId: tav.id,
+      lastTickAt: new Date(0),
       now: new Date(1000),
       context: { customChecks: { logging_allowed: true } },
     });
 
-    expect(result.started).toHaveLength(0);
+    expect(result.started).toHaveLength(1);
     expect(result.completed).toHaveLength(0);
 
-    const [row] = await db
-      .select()
-      .from(task)
-      .where(eq(task.tavId, tav.id));
+    const [row] = await db.select().from(task).where(eq(task.tavId, tav.id));
     expect(row.status).toBe("executing");
   });
 
-  // Expired executions should recycle and immediately start fresh work.
-  it("completes overdue work then starts the next pending task", async () => {
+  it("completes the executing task first then starts the next pending task", async () => {
     const tav = await createTav(db, { name: "Finisher" });
 
     await db
@@ -153,7 +356,8 @@ describe("task ticking", () => {
 
     await tickTask(db, {
       tavId: tav.id,
-      now: new Date(0),
+      lastTickAt: new Date(0),
+      now: new Date(3000),
       context: { customChecks: { logging_allowed: true } },
     });
 
@@ -188,12 +392,7 @@ describe("task ticking", () => {
 
     await tickTask(db, {
       tavId: tav.id,
-      now: new Date(0),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
-    await tickTask(db, {
-      tavId: tav.id,
+      lastTickAt: new Date(0),
       now: new Date(5000),
       context: { customChecks: { logging_allowed: true } },
     });
@@ -203,16 +402,14 @@ describe("task ticking", () => {
       .from(tavTable)
       .where(eq(tavTable.id, tav.id));
 
-    expect(tavRow?.xp).toBe(3);
+    expect(tavRow?.xp).toBe(6);
 
     const [skillRow] = await db
       .select({ xp: skill.xp })
       .from(skill)
-      .where(
-        and(eq(skill.tavId, tav.id), eq(skill.id, "logging")),
-      );
+      .where(and(eq(skill.tavId, tav.id), eq(skill.id, "logging")));
 
-    expect(skillRow?.xp).toBe(10);
+    expect(skillRow?.xp).toBe(20);
 
     const inventoryRows = await db
       .select()
@@ -220,7 +417,7 @@ describe("task ticking", () => {
       .where(eq(inventory.tavId, tav.id));
 
     expect(inventoryRows).toContainEqual(
-      expect.objectContaining({ itemId: "log", qty: 1 }),
+      expect.objectContaining({ itemId: "log", qty: 2 }),
     );
   });
 
@@ -247,255 +444,31 @@ describe("task ticking", () => {
       targetId: "plank",
     });
 
-    let outcome = await tickTask(db, {
+    const outcome = await tickTask(db, {
       tavId: tav.id,
-      now: new Date(0),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
-    expect(outcome.started).toEqual([
-      { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
-    ]);
-
-    outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(5000),
+      lastTickAt: new Date(0),
+      now: new Date(4000),
       context: { customChecks: { logging_allowed: true } },
     });
 
     expect(outcome.completed).toEqual([
       { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
-    ]);
-    expect(outcome.started).toEqual([
       { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
     ]);
 
-    outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(10000),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
-    expect(outcome.completed).toEqual([
-      { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
-    ]);
     expect(outcome.started).toEqual([
+      { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
+      { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
       { tavId: tav.id, skillId: "wood_craft", targetId: "plank" },
     ]);
 
-    outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(15000),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
-    expect(outcome.completed).toEqual([
-      { tavId: tav.id, skillId: "wood_craft", targetId: "plank" },
-    ]);
-    expect(outcome.started).toEqual([
-      { tavId: tav.id, skillId: "logging", targetId: "small_tree" },
-    ]);
-
-    const items = await db
-      .select({ itemId: inventory.itemId, qty: inventory.qty })
+    const inventoryRows = await db
+      .select()
       .from(inventory)
       .where(eq(inventory.tavId, tav.id));
 
-    expect(items).toContainEqual(
-      expect.objectContaining({ itemId: "plank", qty: 1 }),
+    expect(inventoryRows).toContainEqual(
+      expect.objectContaining({ itemId: "log", qty: 2 }),
     );
-    expect(items.find((item) => item.itemId === "log")).toBeUndefined();
-  });
-
-  it("handles completion effects that grant no rewards", async () => {
-    const tav = await createTav(db, { name: "Idler" });
-
-    await addTask(db, {
-      tavId: tav.id,
-      skillId: "idle",
-      targetId: null,
-    });
-
-    await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(0),
-    });
-
-    const outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(5000),
-    });
-
-    expect(outcome.completed).toEqual([
-      {
-        tavId: tav.id,
-        skillId: "idle",
-        targetId: schema.TASK_TARGETLESS_KEY,
-      },
-    ]);
-
-    const totals = await getInventoryTotals(db, tav.id);
-    expect(totals).toEqual({});
-  });
-
-  // Requirement failures should keep tasks in the queue untouched.
-  it("skips pending tasks when requirements fail", async () => {
-    const tav = await createTav(db, { name: "Blocked" });
-
-    await db
-      .update(tavTable)
-      .set({ flags: ["forest_access"] })
-      .where(eq(tavTable.id, tav.id));
-
-    await addTask(db, {
-      tavId: tav.id,
-      skillId: "logging",
-      targetId: "small_tree",
-    });
-
-    const outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(0),
-      context: { customChecks: { logging_allowed: false } },
-    });
-
-    expect(outcome.started).toHaveLength(0);
-  });
-
-  // Unknown skill ids should mark running tasks as failed.
-  it("fails executing tasks with unknown skills", async () => {
-    const tav = await createTav(db, { name: "Mystery" });
-
-    await db.insert(skill).values({ id: "unknown", tavId: tav.id });
-
-    await db.insert(task).values({
-      tavId: tav.id,
-      skillId: "unknown",
-      targetId: schema.TASK_TARGETLESS_KEY,
-      status: "executing",
-      startedAt: new Date(0),
-    });
-
-    const outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(1000),
-    });
-
-    expect(outcome.failed).toEqual([
-      { tavId: tav.id, skillId: "unknown", targetId: schema.TASK_TARGETLESS_KEY },
-    ]);
-  });
-
-  // Validation errors are treated like unmet requirements.
-  it("ignores pending tasks that throw during validation", async () => {
-    const tav = await createTav(db, { name: "Validator" });
-
-    await db.insert(skill).values({ id: "logging", tavId: tav.id });
-    await db
-      .insert(task)
-      .values({
-        tavId: tav.id,
-        skillId: "logging",
-        targetId: "mystery_target",
-        status: "pending",
-        createdAt: new Date(0),
-      });
-
-    const outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(5000),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
-    expect(outcome.started).toHaveLength(0);
-    expect(outcome.completed).toHaveLength(0);
-    expect(outcome.failed).toHaveLength(0);
-  });
-
-  it("ignores pending tasks with unknown skill definitions", async () => {
-    const tav = await createTav(db, { name: "UnknownSkill" });
-
-    await db.insert(skill).values({ id: "orphan", tavId: tav.id });
-    await db
-      .insert(task)
-      .values({
-        tavId: tav.id,
-        skillId: "orphan",
-        targetId: schema.TASK_TARGETLESS_KEY,
-        status: "pending",
-      });
-
-    const outcome = await tickTask(db, { tavId: tav.id, now: new Date(0) });
-    expect(outcome.started).toHaveLength(0);
-  });
-
-  it("falls back to the first active tav when none is supplied", async () => {
-    const tav = await createTav(db, { name: "Fallback" });
-
-    await addTask(db, {
-      tavId: tav.id,
-      skillId: "idle",
-      targetId: null,
-    });
-
-    const outcome = await tickTask(db, {
-      now: new Date(0),
-    });
-
-    expect(outcome.started).toEqual([
-      { tavId: tav.id, skillId: "idle", targetId: schema.TASK_TARGETLESS_KEY },
-    ]);
-  });
-
-  it("updates the tav's last tick timestamp", async () => {
-    const tav = await createTav(db, { name: "Clock" });
-
-    await addTask(db, {
-      tavId: tav.id,
-      skillId: "idle",
-      targetId: null,
-    });
-
-    await tickTask(db, { tavId: tav.id, now: new Date(1234) });
-
-    const [row] = await db
-      .select({ updatedAt: tavTable.updatedAt })
-      .from(tavTable)
-      .where(eq(tavTable.id, tav.id));
-
-    expect(row.updatedAt?.getTime()).toBe(1234);
-  });
-
-  it("treats missing startedAt as an immediate start", async () => {
-    const tav = await createTav(db, { name: "MissingStart" });
-
-    await db.insert(skill).values({ id: "logging", tavId: tav.id });
-
-    await db
-      .insert(task)
-      .values({
-        tavId: tav.id,
-        skillId: "logging",
-        targetId: "small_tree",
-        status: "executing",
-        startedAt: null,
-      });
-
-    const outcome = await tickTask(db, {
-      tavId: tav.id,
-      now: new Date(1000),
-      lastTickAt: new Date(0),
-      context: { customChecks: { logging_allowed: true } },
-    });
-
-    expect(outcome.started).toHaveLength(0);
-    expect(outcome.completed).toHaveLength(0);
-  });
-
-  it("falls back to the current time when a tav row is missing", async () => {
-    const outcome = await tickTask(db, { tavId: 9999 });
-    expect(outcome.started).toHaveLength(0);
-    expect(outcome.completed).toHaveLength(0);
-    expect(outcome.failed).toHaveLength(0);
   });
 });

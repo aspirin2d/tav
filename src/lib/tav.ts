@@ -264,10 +264,6 @@ function mergeInventory(
     baseMap.set(key, (baseMap.get(key) ?? 0) + value);
   }
 
-  if (base instanceof Map || override instanceof Map) {
-    return baseMap;
-  }
-
   const result: Record<string, number> = {};
   for (const [key, value] of baseMap.entries()) {
     result[key] = value;

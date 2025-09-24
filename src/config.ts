@@ -16,6 +16,7 @@ import {
 const configSchema = z.object({
   defaults: z.object({
     stack_limit: z.int().min(1).max(99),
+    max_loop_limit: z.int().min(1).max(99),
     ability_scores: abilityScoresSchema,
   }),
   skills: z.array(skillDefinitionSchema),
@@ -39,6 +40,7 @@ export const DEFAULT_TAV_ABILITY_SCORES: AbilityScores =
   loadedConfig.defaults.ability_scores;
 
 export const DEfAULT_STACK_LIMIT = loadedConfig.defaults.stack_limit;
+export const MAX_LOOP_LIMIT = loadedConfig.defaults.max_loop_limit;
 
 export const SKILL_DEFINITIONS: SkillDefinition[] = loadedConfig.skills;
 

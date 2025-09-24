@@ -1,7 +1,13 @@
 import { and, eq, or, sql } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 
-import { SKILL_DEFINITIONS, TARGET_DEFINITIONS } from "../config.js";
+import {
+  DEFAULT_TAV_ABILITY_SCORES,
+  MAX_LOOP_LIMIT,
+  SKILL_DEFINITIONS,
+  TARGET_DEFINITIONS,
+} from "../config.js";
+import * as schema from "../db/schema.js";
 import {
   skill,
   task,
@@ -10,8 +16,6 @@ import {
   type RequirementEvaluationContext,
 } from "../db/schema.js";
 import { applyInventoryDelta, type InventoryDelta } from "./inventory.js";
-import { canExecuteTask, loadRequirementContext } from "./tav.js";
-import * as schema from "../db/schema.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -51,8 +55,20 @@ const TARGET_DEFINITION_MAP = new Map(
 );
 
 /**
- * Performs a single scheduling pass: finalize any executing task and start the
- * next eligible pending task for the selected tav.
+ * Advances a tav's work clock and schedules tasks.
+ *
+ * Algorithm (single call may iterate):
+ * - Snapshot tav relations once (skills, tasks, inventory, flags).
+ * - Establish a time cursor from `lastTickAt` or tav `updatedAt`.
+ * - While cursor <= `now` and under `MAX_LOOP_LIMIT`:
+ *   - If an executing task's deadline <= now, aggregate its completion effects,
+ *     update the in-memory requirement context and mark it completed in results,
+ *     advance the cursor to the deadline, then continue.
+ *   - Else choose the best eligible pending task (priority desc, createdAt asc),
+ *     mark it executing at the cursor, then continue.
+ *   - If none are eligible, break.
+ * - Commit XP, inventory, and task state atomically; bump tav `updatedAt` to now.
+ * - When `tavId` is omitted, auto-select a tav with work (pending/executing).
  */
 export async function tickTask(
   db: DatabaseClient,
@@ -65,97 +81,249 @@ export async function tickTask(
     return emptyResult();
   }
 
-  return db.transaction(async (tx) => {
-    const result = emptyResult();
+  // Snapshot (read-only)
+  const tavRow = await db.query.tav.findFirst({
+    with: {
+      skills: true,
+      tasks: true,
+      inventory: true,
+    },
+    where: eq(tav.id, tavId),
+  });
 
-    const lastTick = await resolveLastTickTimestamp(
-      tx,
-      tavId,
-      now,
-      options.lastTickAt,
-    );
+  if (!tavRow) throw new Error("character not found");
 
-    const executing = await getExecutingTask(tx, tavId);
-    const stillRunning = await handleExecutingTask(
-      tx,
-      executing,
-      now,
-      lastTick,
-      result,
-    );
+  // Pre-load requirement base context once (stable snapshot)
+  const abilityScores = tavRow.abilityScores ?? DEFAULT_TAV_ABILITY_SCORES;
 
-    if (!stillRunning) {
-      await startBestPendingTask(tx, tavId, now, options.context, result);
+  const rawFlags = (tavRow.flags ?? []) as unknown;
+  const flagArray = Array.isArray(rawFlags) ? (rawFlags as string[]) : [];
+  const tavFlags = new Set<string>(flagArray);
+
+  const skillLevels: Record<string, number> = {};
+  for (const row of tavRow.skills ?? []) {
+    skillLevels[row.id] = Number(row.xpLevel ?? 0);
+  }
+
+  const inventoryTotals: Record<string, number> = {};
+  for (const row of tavRow.inventory ?? []) {
+    inventoryTotals[row.itemId] =
+      (inventoryTotals[row.itemId] ?? 0) + Number(row.qty ?? 0);
+  }
+
+  let requirementContext: RequirementEvaluationContext = {
+    abilities: abilityScores,
+    skillLevels,
+    inventory: inventoryTotals,
+    flags: tavFlags,
+  };
+
+  requirementContext = options.context
+    ? {
+        ...requirementContext,
+        ...options.context,
+        // Merge subparts more precisely if you want; baseContext is usually sufficient
+      }
+    : requirementContext;
+
+  const cursorStart = options.lastTickAt ?? tavRow?.updatedAt ?? now;
+  let cursor = new Date(cursorStart.getTime());
+
+  // empty result
+  const result = emptyResult();
+  const context = {
+    tavXpDelta: 0,
+    skillXpDelta: {} as Record<string, number>,
+    inventoryDelta: {} as Record<string, number>,
+  };
+
+  let loopCount = 0;
+
+  // loop for advancing time cursor
+  while (cursor <= now && loopCount < MAX_LOOP_LIMIT) {
+    // pending tasks
+    const pending = tavRow.tasks.filter((t) => t.status === "pending");
+
+    // executing task
+    const executing = tavRow.tasks.find((t) => t.status === "executing");
+
+    // A) If we have an executing task, try to complete it if deadline <= now
+    if (executing) {
+      const skill = getSkillDefinition(executing.skillId);
+      if (!skill) throw new Error("skill not found: " + executing.skillId);
+
+      const startedAt = executing.startedAt ?? cursor;
+      const deadline = new Date(startedAt.getTime() + skill.duration);
+
+      if (now < deadline) {
+        // cannot finish within window; stop due to time
+        break;
+      }
+
+      // complete one cycle at deadline; advance cursor there
+      cursor = deadline;
+
+      // Completion effects (aggregate only)
+      const effect = resolveCompletionEffect(
+        executing.skillId,
+        executing.targetId,
+      );
+      if (effect) {
+        if (effect.tavXp) {
+          context.tavXpDelta += effect.tavXp;
+          // TODO: update tav xp level
+        }
+        if (effect.skillXp) {
+          context.skillXpDelta[executing.skillId] =
+            (context.skillXpDelta[executing.skillId] ?? 0) + effect.skillXp;
+          // TODO: update skill xp level
+        }
+        if (effect.inventory) {
+          for (const [itemId, delta] of Object.entries(effect.inventory)) {
+            const d = delta ?? 0;
+            context.inventoryDelta[itemId] =
+              (context.inventoryDelta[itemId] ?? 0) + d;
+
+            // update requirement context to reflect newly gained/consumed items
+            requirementContext.inventory = addToInventoryContext(
+              requirementContext.inventory,
+              itemId,
+              d,
+            );
+          }
+        }
+      }
+
+      // task completion → move back to pending in memory
+      executing.status = "pending";
+
+      // push the TaskKey into result
+      result.completed.push(taskKey(executing));
+
+      loopCount += 1;
+      continue;
     }
 
-    await tx
-      .update(schema.tav)
-      .set({ updatedAt: now })
-      .where(eq(schema.tav.id, tavId));
+    // B) No executing → pick best eligible pending
+    // Filter eligible pending using canExecuteTask
+    // We evaluate on the stable base context (plus optional user-provided overrides).
+    const eligible: { row: TaskRow; priority: number; createdAtMs: number }[] =
+      [];
 
-    return result;
+    for (const row of pending) {
+      const skillDef = getSkillDefinition(row.skillId);
+      if (!skillDef) continue;
+
+      const targetId = row.targetId ?? schema.TASK_TARGETLESS_KEY;
+      const isAllowedTarget = skillDef.targetIds.includes(targetId);
+
+      if (!isAllowedTarget) {
+        throw new Error(`skill ${row.skillId} cannot target id: ${targetId}`);
+      }
+
+      const targetDef = getTargetDefinition(row.targetId);
+
+      if (
+        !schema.evaluateRequirements(
+          skillDef.executeRequirements,
+          requirementContext,
+        )
+      )
+        continue;
+      if (
+        targetDef &&
+        !schema.evaluateRequirements(
+          targetDef.executeRequirements,
+          requirementContext,
+        )
+      )
+        continue;
+
+      eligible.push({
+        row,
+        priority: skillDef.priority,
+        createdAtMs: row.createdAt?.getTime() ?? 0,
+      });
+    }
+
+    if (eligible.length === 0) {
+      // nothing to do
+      break;
+    }
+
+    // pick best by priority desc, createdAt asc
+    eligible.sort((a, b) => {
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return a.createdAtMs - b.createdAtMs;
+    });
+
+    const pick = eligible[0]!.row;
+    pick.status = "executing";
+    pick.startedAt = new Date(cursor);
+    pick.endedAt = null;
+
+    result.started.push(taskKey(pick));
+    // Loop continues; next iteration will try to complete if deadline ≤ now
+  }
+
+  // Write changes to DB
+  await db.transaction(async (tx) => {
+    // write xp delta
+    if (context.tavXpDelta !== 0) {
+      await tx
+        .update(tav)
+        .set({ xp: sql`${tav.xp} + ${context.tavXpDelta}` })
+        .where(eq(tav.id, tavId));
+    }
+
+    // write skill xp delta
+    for (const skillId in context.skillXpDelta) {
+      const delta = context.skillXpDelta[skillId];
+      if (delta === 0) continue;
+      await tx
+        .update(skill)
+        .set({ xp: sql`${skill.xp} + ${delta}` })
+        .where(and(eq(skill.tavId, tavId), eq(skill.id, skillId)));
+    }
+
+    // write inventory delta
+    await applyInventoryDelta(
+      tx as unknown as DatabaseClient,
+      tavId,
+      context.inventoryDelta,
+      {
+        strict: true,
+      },
+    );
+
+    // update tasks
+    for (const item of tavRow.tasks) {
+      await tx
+        .update(task)
+
+        .set({
+          status: item.status,
+          startedAt: item.startedAt,
+          endedAt: item.endedAt,
+        })
+        .where(
+          and(
+            eq(task.tavId, item.tavId),
+            eq(task.skillId, item.skillId),
+            eq(task.targetId, item.targetId),
+          ),
+        );
+    }
+
+    // Advance tav clock to now to make the window idempotent
+    await tx.update(tav).set({ updatedAt: now }).where(eq(tav.id, tavId));
   });
+
+  return result;
 }
 
 function emptyResult(): TickResult {
   return { started: [], completed: [], failed: [] };
-}
-
-async function resolveLastTickTimestamp(
-  db: DatabaseClient,
-  tavId: number,
-  now: Date,
-  explicit?: Date,
-): Promise<Date> {
-  if (explicit) {
-    return explicit;
-  }
-
-  const row = await db
-    .select({ updatedAt: schema.tav.updatedAt })
-    .from(schema.tav)
-    .where(eq(schema.tav.id, tavId))
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
-
-  return row?.updatedAt ?? now;
-}
-
-async function getExecutingTask(db: DatabaseClient, tavId: number) {
-  return db.query.task
-    .findFirst({
-      where: (tasks, { and: andOp, eq: eqOp }) =>
-        andOp(eqOp(tasks.tavId, tavId), eqOp(tasks.status, "executing")),
-    })
-    .then((row) => row ?? null);
-}
-
-async function handleExecutingTask(
-  db: DatabaseClient,
-  executing: TaskRow | null,
-  now: Date,
-  lastTick: Date,
-  result: TickResult,
-): Promise<boolean> {
-  if (!executing) {
-    return false;
-  }
-
-  const definition = getSkillDefinition(executing.skillId);
-
-  if (!definition) {
-    await markTaskFailed(db, executing, now, result);
-    return false;
-  }
-
-  const deadline = new Date(lastTick.getTime() + definition.duration);
-
-  if (now >= deadline) {
-    await moveTaskToPending(db, executing, now, result);
-    return false;
-  }
-
-  return true;
 }
 
 function getSkillDefinition(skillId: string) {
@@ -166,28 +334,22 @@ function getTargetDefinition(targetId: string) {
   return TARGET_DEFINITION_MAP.get(targetId) ?? null;
 }
 
-async function markTaskFailed(
-  db: DatabaseClient,
-  executing: TaskRow,
-  now: Date,
-  result: TickResult,
-) {
-  // Drop tasks whose skill definition no longer exists so they do not block.
-  const failedRows = await db
-    .update(task)
-    .set({ status: "failed", endedAt: now })
-    .where(
-      and(
-        eq(task.tavId, executing.tavId),
-        eq(task.skillId, executing.skillId),
-        eq(task.targetId, executing.targetId),
-      ),
-    )
-    .returning();
-
-  if (failedRows.length > 0) {
-    result.failed.push(taskKey(executing));
+function addToInventoryContext(
+  inventory: RequirementEvaluationContext["inventory"],
+  itemId: string,
+  delta: number,
+): RequirementEvaluationContext["inventory"] {
+  if (!inventory) {
+    return { [itemId]: delta };
   }
+
+  if (inventory instanceof Map) {
+    inventory.set(itemId, (inventory.get(itemId) ?? 0) + delta);
+    return inventory;
+  }
+
+  inventory[itemId] = (inventory[itemId] ?? 0) + delta;
+  return inventory;
 }
 
 function resolveCompletionEffect(
@@ -305,168 +467,6 @@ function mergeCompletionEffects(
   return Object.keys(result).length > 0 ? result : null;
 }
 
-async function applyTaskCompletionEffects(
-  db: DatabaseClient,
-  executing: TaskRow,
-) {
-  const effect = resolveCompletionEffect(executing.skillId, executing.targetId);
-
-  if (!effect) {
-    return;
-  }
-
-  // Apply rewards atomically alongside task state transitions.
-  const tavXp = effect.tavXp ?? 0;
-  if (tavXp !== 0) {
-    await db
-      .update(tav)
-      .set({ xp: sql`${tav.xp} + ${tavXp}` })
-      .where(eq(tav.id, executing.tavId));
-  }
-
-  const skillXp = effect.skillXp ?? 0;
-  if (skillXp !== 0) {
-    await db
-      .update(skill)
-      .set({ xp: sql`${skill.xp} + ${skillXp}` })
-      .where(
-        and(eq(skill.tavId, executing.tavId), eq(skill.id, executing.skillId)),
-      );
-  }
-
-  if (effect.inventory) {
-    await applyInventoryDelta(db, executing.tavId, effect.inventory);
-  }
-}
-
-async function moveTaskToPending(
-  db: DatabaseClient,
-  executing: TaskRow,
-  now: Date,
-  result: TickResult,
-) {
-  // Requeue tasks that exceeded their allotted duration for another attempt.
-  const completedRows = await db
-    .update(task)
-    .set({ status: "pending", startedAt: null, endedAt: now })
-    .where(
-      and(
-        eq(task.tavId, executing.tavId),
-        eq(task.skillId, executing.skillId),
-        eq(task.targetId, executing.targetId),
-      ),
-    )
-    .returning();
-
-  if (completedRows.length > 0) {
-    await applyTaskCompletionEffects(db, executing);
-    result.completed.push(taskKey(executing));
-  }
-}
-
-async function startBestPendingTask(
-  db: DatabaseClient,
-  tavId: number,
-  now: Date,
-  context: RequirementEvaluationContext | undefined,
-  result: TickResult,
-) {
-  const pendingTasks = await db.query.task.findMany({
-    where: (tasks, { and: andOp, eq: eqOp }) =>
-      andOp(eqOp(tasks.tavId, tavId), eqOp(tasks.status, "pending")),
-  });
-
-  if (pendingTasks.length === 0) {
-    return;
-  }
-
-  const baseContext = await loadRequirementContext(db, tavId);
-
-  let best: { row: TaskRow; priority: number; createdAt: number } | null = null;
-
-  for (const row of pendingTasks) {
-    const definition = getSkillDefinition(row.skillId);
-
-    if (!definition) {
-      continue;
-    }
-
-    try {
-      const executable = await canExecuteTask(db, {
-        tavId,
-        skillId: row.skillId,
-        targetId: row.targetId,
-        context,
-        baseContext,
-      });
-
-      if (!executable) {
-        continue;
-      }
-    } catch {
-      continue;
-    }
-
-    const createdAt = row.createdAt?.getTime() ?? 0;
-
-    if (!best) {
-      best = { row, priority: definition.priority, createdAt };
-      continue;
-    }
-
-    if (definition.priority > best.priority) {
-      best = { row, priority: definition.priority, createdAt };
-      continue;
-    }
-
-    if (definition.priority === best.priority && createdAt < best.createdAt) {
-      best = { row, priority: definition.priority, createdAt };
-    }
-  }
-
-  if (!best) {
-    return;
-  }
-
-  const target = best.row;
-
-  const startedRows = await db
-    .update(task)
-    .set({ status: "executing", startedAt: now, endedAt: null })
-    .where(
-      and(
-        eq(task.tavId, target.tavId),
-        eq(task.skillId, target.skillId),
-        eq(task.targetId, target.targetId),
-        eq(task.status, "pending"),
-      ),
-    )
-    .returning();
-
-  if (startedRows.length > 0) {
-    result.started.push(taskKey(target));
-  }
-}
-
-async function resolveTavId(
-  db: DatabaseClient,
-  supplied: number | undefined,
-): Promise<number | null> {
-  // Respect a caller-provided tavId when set.
-  if (typeof supplied === "number") {
-    return supplied;
-  }
-
-  // Otherwise pick any tav that still has work to do.
-  const rows = await db
-    .select({ tavId: task.tavId })
-    .from(task)
-    .where(or(eq(task.status, "pending"), eq(task.status, "executing")))
-    .limit(1);
-
-  return rows[0]?.tavId ?? null;
-}
-
 function taskKey(record: {
   tavId: number;
   skillId: string;
@@ -477,4 +477,21 @@ function taskKey(record: {
     skillId: record.skillId,
     targetId: record.targetId,
   };
+}
+
+async function resolveTavId(
+  db: DatabaseClient,
+  supplied: number | undefined,
+): Promise<number | null> {
+  if (typeof supplied === "number") {
+    return supplied;
+  }
+
+  const rows = await db
+    .select({ tavId: task.tavId })
+    .from(task)
+    .where(or(eq(task.status, "pending"), eq(task.status, "executing")))
+    .limit(1);
+
+  return rows[0]?.tavId ?? null;
 }

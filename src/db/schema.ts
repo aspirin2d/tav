@@ -106,12 +106,10 @@ export const requirementSchema: z.ZodType<Requirement> = z.lazy(() =>
   ]),
 );
 
-type InventoryShape = Record<string, number> | Map<string, number>;
-
 export type RequirementEvaluationContext = {
   abilities?: Partial<Record<(typeof abilityIds)[number], number>>;
   skillLevels?: Record<string, number>;
-  inventory?: InventoryShape;
+  inventory?: Record<string, number> | Map<string, number>;
   flags?: Iterable<string>;
   customChecks?: Record<
     string,
@@ -175,7 +173,7 @@ export function evaluateRequirements(
 }
 
 function readInventory(
-  inventory: InventoryShape | undefined,
+  inventory: RequirementEvaluationContext["inventory"],
   itemId: string,
 ): number {
   if (!inventory) {
@@ -291,7 +289,9 @@ function transformCompletionEffectValue(
   }
 
   if (value.inventory) {
-    const entries = Object.entries(value.inventory).filter(([, qty]) => qty !== 0);
+    const entries = Object.entries(value.inventory).filter(
+      ([, qty]) => qty !== 0,
+    );
     if (entries.length > 0) {
       result.inventory = Object.fromEntries(entries);
     }
@@ -319,7 +319,9 @@ function transformCompletionEffect(
             const transformed = transformCompletionEffectValue(value);
             return transformed ? [targetId, transformed] : null;
           })
-          .filter((entry): entry is [string, CompletionEffectValue] => entry !== null),
+          .filter(
+            (entry): entry is [string, CompletionEffectValue] => entry !== null,
+          ),
       )
     : undefined;
 
@@ -330,7 +332,9 @@ function transformCompletionEffect(
   }
 
   if (hasOverrides) {
-    return base ? { ...base, targetOverrides: overrides } : { targetOverrides: overrides };
+    return base
+      ? { ...base, targetOverrides: overrides }
+      : { targetOverrides: overrides };
   }
 
   return base;
@@ -368,19 +372,21 @@ export const targetDefinitionSchema = labeledDefinitionSchema
     completion_effect: completionEffectValueSchema.optional(),
     skills: z.array(slugSchema).default([]),
   })
-  .transform(({
-    add_requirements,
-    execute_requirements,
-    completion_effect,
-    skills,
-    ...rest
-  }) => ({
-    ...rest,
-    addRequirements: add_requirements,
-    executeRequirements: execute_requirements,
-    completionEffect: transformCompletionEffectValue(completion_effect),
-    skills,
-  }));
+  .transform(
+    ({
+      add_requirements,
+      execute_requirements,
+      completion_effect,
+      skills,
+      ...rest
+    }) => ({
+      ...rest,
+      addRequirements: add_requirements,
+      executeRequirements: execute_requirements,
+      completionEffect: transformCompletionEffectValue(completion_effect),
+      skills,
+    }),
+  );
 
 export type AbilityScores = z.infer<typeof abilityScoresSchema>;
 export type ItemDefinition = z.infer<typeof itemDefinitionSchema>;
@@ -402,7 +408,10 @@ export const tav = pgTable(
     id: serial().primaryKey(),
     name: text("name").notNull(),
     abilityScores: jsonb("ability_scores").$type<AbilityScores>().notNull(),
-    flags: jsonb("flags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    flags: jsonb("flags")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     hpCurrent: integer("hp_current").notNull().default(10),
     hpTemp: integer("hp_temp").notNull().default(0),
     hpMax: integer("hp_max").notNull().default(10),
@@ -489,7 +498,7 @@ export const task = pgTable(
 
 export const tavRelations = relations(tav, ({ many }) => ({
   tasks: many(task),
-  skills: many(skill),
+  skills: many(skill), // skill info(eg: xp, level...)
   inventory: many(inventory),
 }));
 

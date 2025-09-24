@@ -1,5 +1,6 @@
 [defaults]
 stack_limit = 99
+max_loop_limit = 60
 
 [defaults.ability_scores]
 str = 10

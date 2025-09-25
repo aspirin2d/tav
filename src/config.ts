@@ -43,7 +43,8 @@ const loadedConfig = loadConfig();
 export const DEFAULT_TAV_ABILITY_SCORES: AbilityScores =
   loadedConfig.defaults.ability_scores;
 
-export const DEfAULT_STACK_LIMIT = loadedConfig.defaults.stack_limit;
+// Note: historical typo kept appearing in imports. Use the canonical name.
+export const DEFAULT_STACK_LIMIT = loadedConfig.defaults.stack_limit;
 export const MAX_LOOP_LIMIT = loadedConfig.defaults.max_loop_limit;
 export const TAV_LEVEL_THRESHOLDS = loadedConfig.defaults.tav_level_thresholds;
 export const SKILL_LEVEL_THRESHOLDS =

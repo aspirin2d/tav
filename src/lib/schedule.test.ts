@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import * as schema from "../db/schema.js";
 import { DEFAULT_SCHEDULE_BLOCKS } from "../config.js";
 import { createTav } from "./tav.js";
-import { computeBlockIndex, getCurrentScheduleBlock } from "./schedule.js";
+import { computeBlockIndex, getCurrentScheduleBlock, resolveScheduleBlockFromBlocks } from "./schedule.js";
 
 type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -86,5 +86,39 @@ describe("schedule", () => {
       .where(eq(schema.schedule.id, row.scheduleId!));
 
     expect(sched.blocks).toEqual(DEFAULT_SCHEDULE_BLOCKS);
+  });
+
+  it("resolves block from in-memory blocks array and returns null for invalid entries", () => {
+    const blocks = [
+      "work",
+      "downtime",
+      "bathtime",
+      "bedtime",
+      "work",
+      "work",
+      // rest default to work for simplicity
+      ...Array.from({ length: 18 }, () => "work"),
+    ];
+
+    expect(resolveScheduleBlockFromBlocks(blocks, new Date(0))).toBe("work");
+    expect(resolveScheduleBlockFromBlocks(blocks, new Date(25_000))).toBe(
+      "downtime",
+    );
+    expect(resolveScheduleBlockFromBlocks(blocks, new Date(50_000))).toBe(
+      "bathtime",
+    );
+    expect(resolveScheduleBlockFromBlocks(blocks, new Date(75_000))).toBe(
+      "bedtime",
+    );
+
+    const invalid = [
+      "work",
+      // inject an invalid string at index 1
+      "partytime" as any,
+      ...Array.from({ length: 22 }, () => "work"),
+    ];
+    expect(resolveScheduleBlockFromBlocks(invalid, new Date(25_000))).toBe(
+      null,
+    );
   });
 });

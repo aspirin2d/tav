@@ -251,9 +251,15 @@ async function buildRequirementContext(
   };
 }
 
-function mergeRequirementContexts(
+export type MergeRequirementContextOptions = {
+  /** If true, treat override.inventory values as subtractive instead of additive. Default: false. */
+  subtractInventory?: boolean;
+};
+
+export function mergeRequirementContexts(
   base: RequirementEvaluationContext,
   override?: RequirementEvaluationContext,
+  options?: MergeRequirementContextOptions,
 ): RequirementEvaluationContext {
   if (!override) {
     return base;
@@ -268,7 +274,7 @@ function mergeRequirementContexts(
     : base.skillLevels;
 
   const inventory = override.inventory
-    ? mergeInventory(base.inventory, override.inventory)
+    ? mergeInventory(base.inventory, override.inventory, options)
     : base.inventory;
 
   const flags = mergeIterables(base.flags, override.flags);
@@ -292,6 +298,7 @@ function mergeRequirementContexts(
 function mergeInventory(
   base: RequirementEvaluationContext["inventory"],
   override: RequirementEvaluationContext["inventory"],
+  options?: MergeRequirementContextOptions,
 ): RequirementEvaluationContext["inventory"] {
   const baseMap = normalizeInventory(base);
   const overrideMap = normalizeInventory(override);
@@ -301,8 +308,9 @@ function mergeInventory(
     return undefined;
   }
 
+  const sign = options?.subtractInventory ? -1 : 1;
   for (const [key, value] of overrideMap.entries()) {
-    baseMap.set(key, (baseMap.get(key) ?? 0) + value);
+    baseMap.set(key, (baseMap.get(key) ?? 0) + sign * value);
   }
 
   const result: Record<string, number> = {};

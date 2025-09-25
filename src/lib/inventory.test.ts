@@ -20,6 +20,7 @@ import {
   moveInventoryItem,
   getItemQuantity,
   type InventoryTotals,
+  compactInventory,
 } from "./inventory.js";
 
 // --- Mock item defs: define stack limits per item id ---
@@ -323,6 +324,29 @@ describe("inventory", () => {
     expect(rows.map((r) => ({ itemId: r.itemId, qty: Number(r.qty) }))).toEqual(
       [{ itemId: "copper", qty: 10 }],
     );
+  });
+
+  it("compactInventory merges stacks and reassigns contiguous slots", async () => {
+    // Create sparse, partially filled stacks
+    await db.insert(schema.inventory).values([
+      { tavId: TAV_ID, slot: 0, itemId: "copper", qty: 18 }, // cap 20
+      { tavId: TAV_ID, slot: 5, itemId: "copper", qty: 7 },
+      { tavId: TAV_ID, slot: 9, itemId: "gold", qty: 2 }, // cap 5
+      { tavId: TAV_ID, slot: 12, itemId: "gold", qty: 4 },
+    ]);
+
+    await compactInventory(db, TAV_ID);
+
+    const rows = await listInventory(db, TAV_ID);
+    // copper total 25 => [20,5]; gold total 6 => [5,1]; slots 0..3
+    expect(
+      rows.map((r) => ({ slot: Number(r.slot), itemId: r.itemId, qty: Number(r.qty) })),
+    ).toEqual([
+      { slot: 0, itemId: "copper", qty: 20 },
+      { slot: 1, itemId: "copper", qty: 5 },
+      { slot: 2, itemId: "gold", qty: 5 },
+      { slot: 3, itemId: "gold", qty: 1 },
+    ]);
   });
 
   it("moveInventoryItem throws for invalid fromSlot (<0)", async () => {

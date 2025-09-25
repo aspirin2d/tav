@@ -1,10 +1,15 @@
+// Inventory management utilities
+// - Each record is a stack at a specific `slot` (0..N-1).
+// - Moves/merges/swaps preserve slot indices; we do not auto-compact.
+// - Positive deltas top-up existing stacks then open the smallest free slot.
+// - Negative deltas consume LIFO across stacks of the same item.
 import { and, eq } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 
 import { inventory } from "../db/schema.js";
 import * as schema from "../db/schema.js";
 import { requireItemDefinition } from "./items.js";
-import { DEfAULT_STACK_LIMIT } from "../config.js";
+import { DEFAULT_STACK_LIMIT } from "../config.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -135,6 +140,7 @@ export async function applyInventoryDelta(
       }
     }
 
+    // Helper to find the next free slot at write time to avoid gaps
     const smallestEmptySlot = () => nextFreeSlot(occupied);
 
     for (const [itemId, rawChange] of entries) {
@@ -240,6 +246,19 @@ export async function setInventoryItems(
   });
 }
 
+/**
+ * Compacts a tav's inventory by merging stacks per item up to stack limits
+ * and reassigning contiguous slots from 0..N-1. Item grouping order follows
+ * first appearance by current slot order.
+ */
+export async function compactInventory(
+  db: DatabaseClient,
+  tavId: number,
+): Promise<void> {
+  const totals = await getInventoryTotals(db, tavId);
+  await setInventoryItems(db, tavId, totals);
+}
+
 /** Convenience: read the current total quantity for an item. */
 export async function getItemQuantity(
   db: DatabaseClient,
@@ -269,7 +288,7 @@ function toInt(n: unknown): number {
 function getStackLimitSafe(itemId: string): number {
   // Prefer per-item limit; fall back to global default if absent.
   const def = requireItemDefinition(itemId);
-  return def.stackLimit ?? DEfAULT_STACK_LIMIT;
+  return def.stackLimit ?? DEFAULT_STACK_LIMIT;
 }
 
 type SlotRec = { itemId: string; qty: number };

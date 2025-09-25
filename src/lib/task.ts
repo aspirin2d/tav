@@ -18,12 +18,8 @@ import {
   type RequirementEvaluationContext,
 } from "../db/schema.js";
 import { applyInventoryDelta, type InventoryDelta } from "./inventory.js";
-import {
-  computeBlockIndex,
-  scheduleFlag,
-  type ScheduleBlock,
-} from "./schedule.js";
-import { getTavWithRelations } from "./tav.js";
+import { scheduleFlag, resolveScheduleBlockFromBlocks, type ScheduleBlock } from "./schedule.js";
+import { getTavWithRelations, mergeRequirementContexts } from "./tav.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
 
@@ -118,13 +114,12 @@ export async function tickTask(
     flags: tavFlags,
   };
 
-  requirementContext = options.context
-    ? {
-        ...requirementContext,
-        ...options.context,
-        // Merge subparts more precisely if you want; baseContext is usually sufficient
-      }
-    : requirementContext;
+  if (options.context) {
+    requirementContext = mergeRequirementContexts(
+      requirementContext,
+      options.context,
+    );
+  }
 
   const cursorStart = options.lastTickAt ?? tavRow?.updatedAt ?? now;
   let cursor = new Date(cursorStart.getTime());
@@ -149,21 +144,10 @@ export async function tickTask(
   // loop for advancing time cursor
   while (cursor <= now && loopCount < MAX_LOOP_LIMIT) {
     // Compute current schedule block from snapshot and inject as a flag
-    let block: ScheduleBlock | null = null;
-    if (Array.isArray(scheduleBlocks)) {
-      const idx = computeBlockIndex(cursor);
-      const value = (scheduleBlocks as any[])[idx];
-      if (
-        value === "bathtime" ||
-        value === "work" ||
-        value === "downtime" ||
-        value === "bedtime"
-      ) {
-        block = value;
-      }
-    } else {
-      block = null;
-    }
+    const block: ScheduleBlock | null = resolveScheduleBlockFromBlocks(
+      scheduleBlocks,
+      cursor,
+    );
     if (block) {
       const flags = new Set<string>();
       // carry existing flags (Set or Iterable)

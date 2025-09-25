@@ -18,7 +18,11 @@ import {
   type RequirementEvaluationContext,
 } from "../db/schema.js";
 import { applyInventoryDelta, type InventoryDelta } from "./inventory.js";
-import { scheduleFlag, resolveScheduleBlockFromBlocks, type ScheduleBlock } from "./schedule.js";
+import {
+  scheduleFlag,
+  resolveScheduleBlockFromBlocks,
+  type ScheduleBlock,
+} from "./schedule.js";
 import { getTavWithRelations, mergeRequirementContexts } from "./tav.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
@@ -515,7 +519,7 @@ function taskKey(record: {
 }
 
 // Expose selected helpers for tests
-export { addToInventoryContext, mergeCompletionEffects };
+export { addToInventoryContext, mergeCompletionEffects, priorityDeltaForBlock };
 
 function priorityDeltaForBlock(block: ScheduleBlock): number {
   // Default modifiers now neutral; use per-skill overrides to tune

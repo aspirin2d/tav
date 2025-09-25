@@ -214,7 +214,7 @@ async function buildRequirementContext(
 ): Promise<RequirementEvaluationContext> {
   const tavRow = await db.query.tav.findFirst({
     where: eq(tav.id, tavId),
-    columns: { abilityScores: true, flags: true },
+    columns: { abilityScores: true, flags: true, xp: true },
     with: {
       skills: { columns: { id: true, xp: true } },
       inventory: { columns: { itemId: true, qty: true } },

@@ -247,4 +247,30 @@ describe("tav database helpers", () => {
       }),
     ).rejects.toThrow(/Unknown skill id/);
   });
+
+  it("buildRequirementContext via loadRequirementContext reflects DB state (xp, skills, inventory, flags)", async () => {
+    const t = await createTav(db, { name: "CtxLoad" });
+
+    // bump tav xp to reach level 2 (thresholds [0,50,150,...])
+    await db
+      .update(tavTable)
+      .set({ xp: 60, flags: ["forest_access"] })
+      .where(eq(tavTable.id, t.id));
+
+    // add skills and inventory
+    await db.insert(skill).values({ tavId: t.id, id: "logging", xp: 20 }); // level 3
+    await db.insert(inventory).values([
+      { tavId: t.id, slot: 0, itemId: "torch", qty: 1 },
+      { tavId: t.id, slot: 1, itemId: "log", qty: 2 },
+    ]);
+
+    const { loadRequirementContext } = await import("./tav.js");
+    const ctx = await loadRequirementContext(db, t.id);
+    expect(ctx.tavLevel).toBeGreaterThanOrEqual(2);
+    expect(ctx.skillLevels?.logging).toBeGreaterThanOrEqual(3);
+    expect(ctx.inventory).toMatchObject({ torch: 1, log: 2 });
+    // flags is Iterable, ensure our flag is present
+    const flags = new Set(ctx.flags as Iterable<string>);
+    expect(flags.has("forest_access")).toBe(true);
+  });
 });

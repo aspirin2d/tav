@@ -1,5 +1,8 @@
 # Repository Guidelines
 
+## Scope & Precedence
+This AGENTS.md applies to the entire repository. If additional AGENTS.md files appear in subdirectories, the most deeply nested one takes precedence for files under its directory. Direct instructions from the user or task prompt supersede this file.
+
 ## Project Structure & Module Organization
 The TypeScript source lives in `src/`. `src/index.ts` boots the Hono HTTP server, while database models are grouped under `src/db/` with Drizzle schemas in `schema.ts`. Generated SQL migrations are written to `drizzle/`, configured through `drizzle.config.ts`. Local PostgreSQL-lite state persists in `pg_data/`. Compiled JavaScript targets `dist/` after a build.
 
@@ -17,3 +20,22 @@ Project history is unavailable in this workspace, so default to conventional, im
 
 ## Environment & Configuration Tips
 Copy `.env.example` (if present) or create `.env` with `DATABASE_URL=postgres://...` before running commands. `db:update` and the runtime server both rely on this variable; when using PGlite locally, a path URL such as `file:./pg_data/local.db` keeps data inside the repo. Avoid committing `.env` or the `pg_data/` contents.
+
+## Agent Workflow (Codex CLI)
+- Prefer `rg`/`ripgrep` for searching and read files in chunks (<=250 lines).
+- Use `apply_patch` for all edits; keep changes minimal and focused on the task.
+- For multi-step work, maintain a short plan with exactly one `in_progress` step.
+- Send a brief preamble before grouped shell commands; avoid noise for trivial reads.
+- Validate with `pnpm build` for type checks; run `pnpm test` if tests are affected.
+- Do not introduce unrelated fixes, rename files unnecessarily, or add license headers.
+- Follow ESM imports (no file extensions), strict TypeScript, two-space indent, semicolons, and double quotes.
+
+## Common Agent Tasks
+- Schema change: update `src/db/schema.ts`, run `pnpm db:update`, and reference new tables in code. Include notes about generated files under `drizzle/`.
+- Add route: update `src/index.ts` (Hono), create handler modules in `src/` as needed, and document sample requests in the PR/commit body.
+- Data/config changes: adjust `data/config.toml`, update types/validators in `src/config.ts`, and extend tests under `src/lib/`.
+
+## Troubleshooting
+- `DATABASE_URL` missing: create `.env` with a PGlite file path `file:./pg_data/local.db`.
+- Migrations out of sync: re-run `pnpm db:update` and ensure `drizzle/` is updated.
+- ESM import errors: ensure imports omit file extensions and use relative paths from `.ts` files.

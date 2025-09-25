@@ -3,6 +3,7 @@ import type { PgliteDatabase } from "drizzle-orm/pglite";
 
 import {
   DEFAULT_TAV_ABILITY_SCORES,
+  DEFAULT_SCHEDULE_BLOCKS,
   SKILL_DEFINITIONS,
   TARGET_DEFINITIONS,
   SKILL_LEVEL_THRESHOLDS,
@@ -17,6 +18,7 @@ import {
   task,
   TASK_TARGETLESS_KEY,
   tav,
+  schedule,
   type RequirementEvaluationContext,
   type TargetDefinition,
 } from "../db/schema.js";
@@ -42,15 +44,39 @@ export async function createTav(
   db: DatabaseClient,
   input: CreateTavInput,
 ): Promise<TavRecord> {
+  const scheduleId = await ensureDefaultSchedule(db);
+
   const [created] = await db
     .insert(tav)
     .values({
       name: input.name,
       abilityScores: DEFAULT_TAV_ABILITY_SCORES,
       flags: [],
+      scheduleId,
     })
     .returning();
   return created;
+}
+
+async function ensureDefaultSchedule(db: DatabaseClient): Promise<number | null> {
+  // Prefer an existing schedule named "default"; otherwise create an all-work schedule.
+  const [existing] = await db
+    .select()
+    .from(schedule)
+    .where(eq(schedule.name, "default"))
+    .limit(1);
+
+  if (existing) {
+    return existing.id as number;
+  }
+
+  const blocks = DEFAULT_SCHEDULE_BLOCKS;
+  const [created] = await db
+    .insert(schedule)
+    .values({ name: "default", description: "Configured default schedule", blocks })
+    .returning();
+
+  return (created as any).id as number;
 }
 
 export async function getTavById(
@@ -69,6 +95,7 @@ export async function getTavWithRelations(db: DatabaseClient, tavId: number) {
       skills: true,
       tasks: true,
       inventory: true,
+      schedule: true,
     },
   });
 

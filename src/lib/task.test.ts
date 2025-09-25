@@ -29,6 +29,71 @@ describe("task ticking", () => {
     await migrate(db, { migrationsFolder: migrationsPath() });
   });
 
+  it("does not start work-gated tasks during a non-work block", async () => {
+    // Create a schedule where the first block is downtime and the second is work
+    const blocks = Array.from({ length: 24 }, (_, i) => (i === 0 ? "downtime" : "work"));
+    const [sched] = await db
+      .insert(schema.schedule)
+      .values({ name: "daytime", description: "", blocks })
+      .returning();
+
+    const t = await createTav(db, { name: "ScheduleGate" });
+
+    // Assign the schedule to the tav
+    await db
+      .update(tavTable)
+      .set({ scheduleId: sched.id })
+      .where(eq(tavTable.id, t.id));
+
+    // Queue a task whose execute requires schedule_block_work (e.g., meditate)
+    await addTask(db, { tavId: t.id, skillId: "meditate", targetId: null });
+
+    // At t=0 we are in block 0 = downtime, so meditate should not start
+    const out0 = await tickTask(db, { tavId: t.id, lastTickAt: new Date(0), now: new Date(100) });
+    expect(out0.started).toHaveLength(0);
+    expect(out0.completed).toHaveLength(0);
+
+    // Move cursor to the start of block 1 (work) and it should start now
+    const out1 = await tickTask(db, { tavId: t.id, lastTickAt: new Date(25_000), now: new Date(25_100) });
+    expect(out1.started).toEqual([
+      { tavId: t.id, skillId: "meditate", targetId: schema.TASK_TARGETLESS_KEY },
+    ]);
+  });
+
+  it("starts work-gated tasks with default schedule assigned", async () => {
+    const t = await createTav(db, { name: "DefaultWork" });
+
+    // meditate is gated by schedule_block_work only; default schedule is all work blocks
+    await addTask(db, { tavId: t.id, skillId: "meditate", targetId: null });
+
+    const out = await tickTask(db, { tavId: t.id, lastTickAt: new Date(0), now: new Date(50) });
+    expect(out.started).toEqual([
+      { tavId: t.id, skillId: "meditate", targetId: schema.TASK_TARGETLESS_KEY },
+    ]);
+  });
+
+  it("does not peek ahead within the window to future work blocks", async () => {
+    // First block is downtime; all subsequent are work
+    const blocks = Array.from({ length: 24 }, (_, i) => (i === 0 ? "downtime" : "work"));
+    const [sched] = await db
+      .insert(schema.schedule)
+      .values({ name: "no_peek", description: "", blocks })
+      .returning();
+
+    const t = await createTav(db, { name: "NoPeek" });
+    await db
+      .update(tavTable)
+      .set({ scheduleId: sched.id })
+      .where(eq(tavTable.id, t.id));
+
+    await addTask(db, { tavId: t.id, skillId: "meditate", targetId: null });
+
+    // Window spans into a future work block, but scheduler evaluates at current cursor only
+    const out = await tickTask(db, { tavId: t.id, lastTickAt: new Date(0), now: new Date(26_000) });
+    expect(out.started).toHaveLength(0);
+    expect(out.completed).toHaveLength(0);
+  });
+
   it("ignores pending tasks with an unknown skill", async () => {
     const tav = await createTav(db, { name: "UnknownSkillPending" });
 

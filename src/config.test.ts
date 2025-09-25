@@ -30,10 +30,11 @@ describe("config schema", () => {
         targetIds: ["small_tree", "big_tree"],
         duration: 2000,
         addRequirements: [],
-        executeRequirements: [
+        executeRequirements: expect.arrayContaining([
           { op: "ability_min", ability: "str", value: 10 },
           { op: "custom", name: "logging_allowed" },
-        ],
+          { op: "flag_present", flagId: "schedule_block_work" },
+        ]),
       }),
     );
 
@@ -49,9 +50,10 @@ describe("config schema", () => {
           { op: "skill_level_min", skillId: "logging", level: 2 },
           { op: "flag_present", flagId: "sawmill_ready" },
         ],
-        executeRequirements: [
+        executeRequirements: expect.arrayContaining([
           { op: "item_required", itemId: "log", quantity: 2 },
-        ],
+          { op: "flag_present", flagId: "schedule_block_work" },
+        ]),
       }),
     );
 
@@ -75,7 +77,7 @@ describe("config schema", () => {
         targetIds: ["forest_edge", "mountain_pass"],
         duration: 2000,
         addRequirements: [],
-        executeRequirements: [
+        executeRequirements: expect.arrayContaining([
           {
             op: "or",
             requirements: [
@@ -83,7 +85,8 @@ describe("config schema", () => {
               { op: "skill_level_min", skillId: "logging", level: 3 },
             ],
           },
-        ],
+          { op: "flag_present", flagId: "schedule_block_work" },
+        ]),
       }),
     );
   });

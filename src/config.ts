@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   abilityScoresSchema,
+  scheduleBlockIdSchema,
   itemDefinitionSchema,
   skillDefinitionSchema,
   targetDefinitionSchema,
@@ -20,6 +21,7 @@ const configSchema = z.object({
     ability_scores: abilityScoresSchema,
     tav_level_thresholds: z.array(z.int().min(0)).min(1),
     skill_level_thresholds: z.array(z.int().min(0)).min(1),
+    default_schedule: z.array(scheduleBlockIdSchema).length(24),
   }),
   skills: z.array(skillDefinitionSchema),
   targets: z.array(targetDefinitionSchema),
@@ -51,6 +53,7 @@ export const SKILL_DEFINITIONS: SkillDefinition[] = loadedConfig.skills;
 
 export const TARGET_DEFINITIONS: TargetDefinition[] = loadedConfig.targets;
 export const ITEM_DEFINITIONS: ItemDefinition[] = loadedConfig.items;
+export const DEFAULT_SCHEDULE_BLOCKS = loadedConfig.defaults.default_schedule;
 
 export function computeLevel(xp: number, thresholds: number[]): number {
   // thresholds are cumulative minimum XP required for each level, starting at level 1

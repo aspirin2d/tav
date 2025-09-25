@@ -18,6 +18,11 @@ import {
   type RequirementEvaluationContext,
 } from "../db/schema.js";
 import { applyInventoryDelta, type InventoryDelta } from "./inventory.js";
+import {
+  computeBlockIndex,
+  scheduleFlag,
+  type ScheduleBlock,
+} from "./schedule.js";
 import { getTavWithRelations } from "./tav.js";
 
 export type DatabaseClient = PgliteDatabase<typeof schema>;
@@ -138,8 +143,36 @@ export async function tickTask(
 
   let loopCount = 0;
 
+  // Cache schedule blocks from the loaded tav snapshot (if any)
+  const scheduleBlocks = (tavRow as any)?.schedule?.blocks as unknown;
+
   // loop for advancing time cursor
   while (cursor <= now && loopCount < MAX_LOOP_LIMIT) {
+    // Compute current schedule block from snapshot and inject as a flag
+    let block: ScheduleBlock | null = null;
+    if (Array.isArray(scheduleBlocks)) {
+      const idx = computeBlockIndex(cursor);
+      const value = (scheduleBlocks as any[])[idx];
+      if (
+        value === "bathtime" ||
+        value === "work" ||
+        value === "downtime" ||
+        value === "bedtime"
+      ) {
+        block = value;
+      }
+    } else {
+      block = null;
+    }
+    if (block) {
+      const flags = new Set<string>();
+      // carry existing flags (Set or Iterable)
+      if (requirementContext.flags) {
+        for (const f of requirementContext.flags) flags.add(f);
+      }
+      flags.add(scheduleFlag(block));
+      requirementContext.flags = flags;
+    }
     // pending tasks
     const pending = tavRow.tasks.filter((t) => t.status === "pending");
 
@@ -233,6 +266,9 @@ export async function tickTask(
 
       const targetDef = getTargetDefinition(row.targetId);
 
+      // Schedule gating is expressed via execute_requirements using
+      // flag_present("schedule:block:<block>") now. No direct allow/deny here.
+
       if (
         !schema.evaluateRequirements(
           skillDef.executeRequirements,
@@ -250,9 +286,14 @@ export async function tickTask(
       )
         continue;
 
-      // Final evaluation = task.priority + skill.priority - 5
+      // Final evaluation = task.priority + skill.priority - 5 + schedule delta
       const taskPriority = (row as any).priority ?? 5;
-      const combinedPriority = skillDef.priority + taskPriority - 5;
+      const scheduleDelta = block
+        ? (skillDef.schedulePriorityModifiers?.[block] ??
+          priorityDeltaForBlock(block))
+        : 0;
+      const combinedPriority =
+        skillDef.priority + taskPriority - 5 + scheduleDelta;
 
       eligible.push({
         row,
@@ -491,3 +532,14 @@ function taskKey(record: {
 
 // Expose selected helpers for tests
 export { addToInventoryContext, mergeCompletionEffects };
+
+function priorityDeltaForBlock(block: ScheduleBlock): number {
+  // Default modifiers now neutral; use per-skill overrides to tune
+  switch (block) {
+    case "work":
+    case "downtime":
+    case "bedtime":
+    case "bathtime":
+      return 0;
+  }
+}

@@ -221,6 +221,13 @@ function hasInIterable(
 // Config schemas
 // ---------------------------------------------------------------------------
 
+export const scheduleBlockIdSchema = z.enum([
+  "bathtime",
+  "work",
+  "downtime",
+  "bedtime",
+]);
+
 export const abilityScoresSchema = z.object({
   str: z.int().min(0).max(30),
   dex: z.int().min(0).max(30),
@@ -356,6 +363,16 @@ const rawSkillDefinitionSchema = labeledDefinitionSchema.extend({
   add_requirements: z.array(requirementSchema).default([]),
   execute_requirements: z.array(requirementSchema).default([]),
   completion_effect: completionEffectSchema.optional(),
+  schedule_priority_modifiers: z
+    .object({
+      bathtime: z.int().min(-9).max(9).optional(),
+      work: z.int().min(-9).max(9).optional(),
+      downtime: z.int().min(-9).max(9).optional(),
+      bedtime: z.int().min(-9).max(9).optional(),
+    })
+    .partial()
+    .optional(),
+  // schedule_execute_* removed in favor of flag_present("schedule:block:<block>")
 });
 
 export const skillDefinitionSchema = rawSkillDefinitionSchema.transform(
@@ -364,6 +381,7 @@ export const skillDefinitionSchema = rawSkillDefinitionSchema.transform(
     add_requirements,
     execute_requirements,
     completion_effect,
+    schedule_priority_modifiers,
     ...rest
   }) => ({
     ...rest,
@@ -371,6 +389,7 @@ export const skillDefinitionSchema = rawSkillDefinitionSchema.transform(
     addRequirements: add_requirements,
     executeRequirements: execute_requirements,
     completionEffect: transformCompletionEffect(completion_effect),
+    schedulePriorityModifiers: schedule_priority_modifiers,
   }),
 );
 
@@ -411,6 +430,39 @@ export const visitLog = pgTable("visit_log", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+
+export const scheduleBlockEnum = pgEnum("schedule_block", [
+  "bathtime",
+  "work",
+  "downtime",
+  "bedtime",
+]);
+
+export const schedule = pgTable(
+  "schedule",
+  {
+    id: serial().primaryKey(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    // 24 blocks, each 25 seconds. Stored as JSONB array of strings from scheduleBlockEnum.
+    blocks: jsonb("blocks")
+      .$type<Array<z.infer<typeof scheduleBlockEnum> | string>>()
+      .notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    // Enforce 24 entries in blocks
+    check(
+      "schedule_blocks_len_24",
+      sql`jsonb_array_length(${table.blocks}) = 24`,
+    ),
+  ],
+);
+
 export const tav = pgTable(
   "tav",
   {
@@ -421,6 +473,9 @@ export const tav = pgTable(
       .$type<string[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
+    scheduleId: integer("schedule_id").references(() => schedule.id, {
+      onDelete: "set null",
+    }),
     hpCurrent: integer("hp_current").notNull().default(10),
     hpTemp: integer("hp_temp").notNull().default(0),
     hpMax: integer("hp_max").notNull().default(10),
@@ -511,11 +566,22 @@ export const task = pgTable(
 // Relations
 // ---------------------------------------------------------------------------
 
-export const tavRelations = relations(tav, ({ many }) => ({
+export const tavRelations = relations(tav, ({ many, one }) => ({
   tasks: many(task),
   skills: many(skill), // skill info(eg: xp, level...)
   inventory: many(inventory),
+  schedule: one(schedule, {
+    fields: [tav.scheduleId],
+    references: [schedule.id],
+  }),
 }));
+
+export const scheduleRelations = relations(schedule, ({ many }) => ({
+  // reverse relation: all tavs assigned to this schedule
+  tavs: many(tav),
+}));
+
+// (Do not declare a second relations() for tav; merged into tavRelations above)
 
 export const tavSkillRelations = relations(skill, ({ one }) => ({
   tav: one(tav, {

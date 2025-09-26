@@ -355,6 +355,15 @@ describe("inventory", () => {
     );
   });
 
+  it("moveInventoryItem throws for invalid toSlot (<0)", async () => {
+    await db
+      .insert(schema.inventory)
+      .values([{ tavId: TAV_ID, slot: 0, itemId: "copper", qty: 1 }]);
+    await expect(moveInventoryItem(db, TAV_ID, 0, -5)).rejects.toThrow(
+      "Invalid toSlot: -5",
+    );
+  });
+
   it("moveInventoryItem throws for invalid fromSlot (non-integer)", async () => {
     // passing non-integer to hit runtime guard
     await expect(moveInventoryItem(db, TAV_ID, 1.5, 0)).rejects.toThrow(

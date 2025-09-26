@@ -4,7 +4,7 @@ max_loop_limit = 60
 tav_level_thresholds = [0, 50, 150, 300, 600]
 skill_level_thresholds = [0, 10, 20, 40, 80]
 default_schedule = [
-  # A more balanced day: start with work to satisfy tests relying on block 0
+  # A more balanced day: start with work to satisfy tests relying on block 1
   # 0-7 work (8 blocks), 8 bathtime, 9-16 work (8 blocks),
   # 17-19 downtime (3), 20 bathtime (1), 21-23 bedtime (3)
   "work",     # 0

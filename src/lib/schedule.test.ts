@@ -43,6 +43,15 @@ describe("schedule", () => {
     expect(computeBlockIndex(new Date(600_000))).toBe(0);
   });
 
+  it("computes block index with offsets and normalizes negatives", () => {
+    // at t=0 base index 0; with +25s offset → block 1
+    expect(computeBlockIndex(new Date(0), 25)).toBe(1);
+    // at t=25s with -25 offset → back to block 0
+    expect(computeBlockIndex(new Date(25_000), -25)).toBe(0);
+    // handle large negative time: -1ms should normalize into last block 23
+    expect(computeBlockIndex(new Date(-1))).toBe(23);
+  });
+
   it("returns current schedule block for a tav", async () => {
     // Create a schedule with a distinct first block
     const blocks = Array.from({ length: 24 }, (_, i) => (i === 0 ? "work" : "downtime"));
@@ -86,6 +95,21 @@ describe("schedule", () => {
       .where(eq(schema.schedule.id, row.scheduleId!));
 
     expect(sched.blocks).toEqual(DEFAULT_SCHEDULE_BLOCKS);
+  });
+
+  it("returns null for tavs without a schedule", async () => {
+    const [t] = await db
+      .insert(schema.tav)
+      .values({
+        name: "NoSchedule",
+        abilityScores: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+        flags: [],
+        scheduleId: null,
+      })
+      .returning();
+
+    const block = await getCurrentScheduleBlock(db, t.id, new Date(0));
+    expect(block).toBeNull();
   });
 
   it("resolves block from in-memory blocks array and returns null for invalid entries", () => {

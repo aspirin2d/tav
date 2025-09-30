@@ -58,6 +58,40 @@ pnpm db:update# drizzle-kit generate + push using DATABASE_URL
 - `data/config.toml` – declarative skill/target/item definitions
 - `drizzle/` – generated SQL migrations (managed by Drizzle Kit)
 
+## HTTP API
+
+Base URL: `http://localhost:3000`
+
+Tavs
+- List: `GET /tav`
+  - `curl -s http://localhost:3000/tav`
+- Create: `POST /tav` { name }
+  - `curl -sX POST http://localhost:3000/tav -H 'content-type: application/json' -d '{"name":"Alice"}'`
+- Read: `GET /tav/:id`
+  - `curl -s http://localhost:3000/tav/1`
+- Update: `PUT /tav/:id` { name?, scheduleId? }
+  - `curl -sX PUT http://localhost:3000/tav/1 -H 'content-type: application/json' -d '{"name":"Alice L.","scheduleId":null}'`
+- Delete: `DELETE /tav/:id`
+  - `curl -sX DELETE http://localhost:3000/tav/1`
+
+Inventory (per tav)
+- List stacks: `GET /tav/:tavId/inventory`
+  - `curl -s http://localhost:3000/tav/1/inventory`
+- Add items: `POST /tav/:tavId/inventory/add` { itemId, qty?=1 }
+  - `curl -sX POST http://localhost:3000/tav/1/inventory/add -H 'content-type: application/json' -d '{"itemId":"log","qty":2}'`
+- Remove items: `POST /tav/:tavId/inventory/remove` { itemId, qty?=1, strict?=true }
+  - `curl -sX POST http://localhost:3000/tav/1/inventory/remove -H 'content-type: application/json' -d '{"itemId":"log","qty":1}'`
+- Move/merge/swap stacks: `POST /tav/:tavId/inventory/move` { fromSlot, toSlot }
+  - `curl -sX POST http://localhost:3000/tav/1/inventory/move -H 'content-type: application/json' -d '{"fromSlot":0,"toSlot":3}'`
+
+Tasks (per tav)
+- List: `GET /tav/:tavId/tasks`
+  - `curl -s http://localhost:3000/tav/1/tasks`
+- Add: `POST /tav/:tavId/tasks` { skillId, targetId?, priority? }
+  - `curl -sX POST http://localhost:3000/tav/1/tasks -H 'content-type: application/json' -d '{"skillId":"meditate","targetId":null,"priority":6}'`
+- Tick scheduler: `POST /tav/:tavId/tasks/tick` { now?, lastTickAt?, context? }
+  - `curl -sX POST http://localhost:3000/tav/1/tasks/tick -H 'content-type: application/json' -d '{"now":"2025-01-01T12:00:00Z"}'`
+
 ## Database & Migrations
 
 - Configure `DATABASE_URL` (see `.env.example`). For local PGlite use a file path URI like `file:./pg_data/local.db` to persist data in-repo.
@@ -89,7 +123,6 @@ Coverage output is written under `coverage/`.
 
 ## TODO
 
-- Routes: add HTTP APIs for tav CRUD, tasks (queue/list/tick), and inventory operations.
 - Docs: document the requirement DSL and `data/config.toml` schema with examples.
 - Tests: lightweight Hono integration tests for routes; expand coverage thresholds.
 - CLI: add a small CLI to run ticks and inspect tav state from the terminal.

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { logger } from "hono/logger";
 
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -9,13 +10,18 @@ import { tavRoutes } from "./routes/tav.js";
 import { inventoryRoutes } from "./routes/inventory.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { jsonError } from "./routes/util.js";
+
 const client = new PGlite(process.env.DATABASE_URL!);
 const db = drizzle({ client, schema: schema });
 
 const app = new Hono();
 
+// Request logging
+app.use("*", logger());
+
 app.onError((err, c) => {
   // Standard JSON error envelope for unhandled errors
+  console.error("Unhandled error:", err);
   return jsonError(c, err?.message ?? "internal_error", 500, "internal_error");
 });
 

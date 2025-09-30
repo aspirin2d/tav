@@ -8,7 +8,7 @@ import * as schema from "./db/schema.js";
 import { tavRoutes } from "./routes/tav.js";
 import { inventoryRoutes } from "./routes/inventory.js";
 import { taskRoutes } from "./routes/tasks.js";
-import { jsonError } from "./routes/_util.js";
+import { jsonError } from "./routes/util.js";
 const client = new PGlite(process.env.DATABASE_URL!);
 const db = drizzle({ client, schema: schema });
 

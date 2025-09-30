@@ -8,7 +8,7 @@ import {
   listInventory,
   moveInventoryItem,
 } from "../lib/inventory.js";
-import { jsonError, jsonOk, parseJson, parseParamId } from "./_util.js";
+import { jsonError, jsonOk, parseJson, parseParamId } from "./util.js";
 
 export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
   const app = new Hono();
@@ -32,7 +32,12 @@ export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
     const parsed = await parseJson(c, bodySchema);
     if ("error" in parsed) return parsed.error;
     const { itemId, qty } = parsed.data;
-    await applyInventoryDelta(db as any, p.id, { [itemId]: qty }, { strict: true });
+    await applyInventoryDelta(
+      db as any,
+      p.id,
+      { [itemId]: qty },
+      { strict: true },
+    );
     const rows = await listInventory(db as any, p.id);
     return jsonOk(c, rows, 201);
   });
@@ -50,7 +55,12 @@ export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
     if ("error" in parsed) return parsed.error;
     const { itemId, qty, strict } = parsed.data;
     try {
-      await applyInventoryDelta(db as any, p.id, { [itemId]: -qty }, { strict });
+      await applyInventoryDelta(
+        db as any,
+        p.id,
+        { [itemId]: -qty },
+        { strict },
+      );
     } catch (err: any) {
       return jsonError(c, err?.message ?? String(err), 400, "inventory_error");
     }

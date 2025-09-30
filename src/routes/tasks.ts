@@ -5,7 +5,7 @@ import { z } from "zod";
 import * as schema from "../db/schema.js";
 import { addTask } from "../lib/tav.js";
 import { tickTask } from "../lib/task.js";
-import { jsonError, jsonOk, parseJson, parseParamId } from "./_util.js";
+import { jsonError, jsonOk, parseJson, parseParamId } from "./util.js";
 
 export function taskRoutes(db: PgliteDatabase<typeof schema>) {
   const app = new Hono();
@@ -16,7 +16,11 @@ export function taskRoutes(db: PgliteDatabase<typeof schema>) {
     if ("error" in p) return p.error;
     const rows = await (db as any).query.task.findMany({
       where: (t: any, { eq }: any) => eq(t.tavId, p.id),
-      orderBy: (t: any, { desc, asc }: any) => [asc(t.status), desc(t.priority), asc(t.createdAt)],
+      orderBy: (t: any, { desc, asc }: any) => [
+        asc(t.status),
+        desc(t.priority),
+        asc(t.createdAt),
+      ],
     });
     return jsonOk(c, rows);
   });

@@ -12,7 +12,7 @@ import {
   jsonOk,
   parseJson,
   parseParamId,
-} from "./_util.js";
+} from "./util.js";
 
 export function tavRoutes(db: PgliteDatabase<typeof schema>) {
   const app = new Hono();

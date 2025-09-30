@@ -17,7 +17,7 @@ export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
   app.get("/", async (c) => {
     const p = parseParamId(c, "tavId");
     if ("error" in p) return p.error;
-    const rows = await listInventory(db as any, p.id);
+    const rows = await listInventory(db, p.id);
     return jsonOk(c, rows);
   });
 
@@ -33,12 +33,12 @@ export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
     if ("error" in parsed) return parsed.error;
     const { itemId, qty } = parsed.data;
     await applyInventoryDelta(
-      db as any,
+      db,
       p.id,
       { [itemId]: qty },
       { strict: true },
     );
-    const rows = await listInventory(db as any, p.id);
+    const rows = await listInventory(db, p.id);
     return jsonOk(c, rows, 201);
   });
 
@@ -56,15 +56,16 @@ export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
     const { itemId, qty, strict } = parsed.data;
     try {
       await applyInventoryDelta(
-        db as any,
+        db,
         p.id,
         { [itemId]: -qty },
         { strict },
       );
-    } catch (err: any) {
-      return jsonError(c, err?.message ?? String(err), 400, "inventory_error");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return jsonError(c, message, 400, "inventory_error");
     }
-    const rows = await listInventory(db as any, p.id);
+    const rows = await listInventory(db, p.id);
     return jsonOk(c, rows);
   });
 
@@ -80,15 +81,16 @@ export function inventoryRoutes(db: PgliteDatabase<typeof schema>) {
     if ("error" in parsed) return parsed.error;
     try {
       await moveInventoryItem(
-        db as any,
+        db,
         p.id,
         parsed.data.fromSlot,
         parsed.data.toSlot,
       );
-    } catch (err: any) {
-      return jsonError(c, err?.message ?? String(err), 400, "inventory_error");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return jsonError(c, message, 400, "inventory_error");
     }
-    const rows = await listInventory(db as any, p.id);
+    const rows = await listInventory(db, p.id);
     return jsonOk(c, rows);
   });
 

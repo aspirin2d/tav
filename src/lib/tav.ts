@@ -76,7 +76,7 @@ async function ensureDefaultSchedule(db: DatabaseClient): Promise<number | null>
     .values({ name: "default", description: "Configured default schedule", blocks })
     .returning();
 
-  return (created as any).id as number;
+  return created.id;
 }
 
 export async function getTavById(
@@ -229,7 +229,7 @@ async function buildRequirementContext(
 
   const skillLevels: Record<string, number> = {};
   for (const row of tavRow?.skills ?? []) {
-    const xp = Number((row as any).xp ?? 0);
+    const xp = Number(row.xp ?? 0);
     skillLevels[row.id] = computeLevel(xp, SKILL_LEVEL_THRESHOLDS);
   }
 
@@ -241,10 +241,7 @@ async function buildRequirementContext(
 
   return {
     abilities: abilityScores,
-    tavLevel: computeLevel(
-      Number((tavRow as any)?.xp ?? 0),
-      TAV_LEVEL_THRESHOLDS,
-    ),
+    tavLevel: computeLevel(Number(tavRow?.xp ?? 0), TAV_LEVEL_THRESHOLDS),
     skillLevels,
     inventory: inventoryTotals,
     flags: tavFlags,

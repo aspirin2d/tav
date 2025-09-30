@@ -58,6 +58,6 @@ export async function getCurrentScheduleBlock(
     with: { schedule: { columns: { id: true, blocks: true } } },
   });
 
-  const blocks = (row as any)?.schedule?.blocks as unknown;
+  const blocks = row?.schedule?.blocks as unknown;
   return resolveScheduleBlockFromBlocks(blocks, at);
 }

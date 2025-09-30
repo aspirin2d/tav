@@ -14,9 +14,9 @@ export function taskRoutes(db: PgliteDatabase<typeof schema>) {
   app.get("/", async (c) => {
     const p = parseParamId(c, "tavId");
     if ("error" in p) return p.error;
-    const rows = await (db as any).query.task.findMany({
-      where: (t: any, { eq }: any) => eq(t.tavId, p.id),
-      orderBy: (t: any, { desc, asc }: any) => [
+    const rows = await db.query.task.findMany({
+      where: (t, { eq }) => eq(t.tavId, p.id),
+      orderBy: (t, { desc, asc }) => [
         asc(t.status),
         desc(t.priority),
         asc(t.createdAt),
@@ -37,39 +37,29 @@ export function taskRoutes(db: PgliteDatabase<typeof schema>) {
     const parsed = await parseJson(c, bodySchema);
     if ("error" in parsed) return parsed.error;
     try {
-      const created = await addTask(db as any, {
+      const created = await addTask(db, {
         tavId: p.id,
         skillId: parsed.data.skillId,
         targetId: parsed.data.targetId ?? undefined,
         priority: parsed.data.priority,
       });
       return jsonOk(c, created, 201);
-    } catch (err: any) {
-      return jsonError(c, err?.message ?? String(err), 400, "task_error");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return jsonError(c, message, 400, "task_error");
     }
   });
 
-  // Tick tasks: optional { now, lastTickAt, context }
-  app.post("/tick", async (c) => {
+  // Tick tasks (no input): GET
+  app.get("/tick", async (c) => {
     const p = parseParamId(c, "tavId");
     if ("error" in p) return p.error;
-    const bodySchema = z.object({
-      now: z.coerce.date().optional(),
-      lastTickAt: z.coerce.date().optional(),
-      context: z.unknown().optional(),
-    });
-    const parsed = await parseJson(c, bodySchema);
-    if ("error" in parsed) return parsed.error;
     try {
-      const result = await tickTask(db as any, {
-        tavId: p.id,
-        now: parsed.data.now,
-        lastTickAt: parsed.data.lastTickAt,
-        context: parsed.data.context as any,
-      });
+      const result = await tickTask(db, { tavId: p.id });
       return jsonOk(c, result);
-    } catch (err: any) {
-      return jsonError(c, err?.message ?? String(err), 400, "task_error");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return jsonError(c, message, 400, "task_error");
     }
   });
 

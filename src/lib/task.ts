@@ -99,7 +99,7 @@ export async function tickTask(
   const skillLevels: Record<string, number> = {};
   const skillXpTotals: Record<string, number> = {};
   for (const row of tavRow.skills ?? []) {
-    const xp = Number((row as any).xp ?? 0);
+    const xp = Number(row.xp ?? 0);
     skillXpTotals[row.id] = xp;
     skillLevels[row.id] = computeLevel(xp, SKILL_LEVEL_THRESHOLDS);
   }
@@ -143,7 +143,7 @@ export async function tickTask(
   let loopCount = 0;
 
   // Cache schedule blocks from the loaded tav snapshot (if any)
-  const scheduleBlocks = (tavRow as any)?.schedule?.blocks as unknown;
+  const scheduleBlocks = tavRow?.schedule?.blocks as unknown;
 
   // loop for advancing time cursor
   while (cursor <= now && loopCount < MAX_LOOP_LIMIT) {
@@ -275,7 +275,7 @@ export async function tickTask(
         continue;
 
       // Final evaluation = task.priority + skill.priority - 5 + schedule delta
-      const taskPriority = (row as any).priority ?? 5;
+      const taskPriority = row.priority ?? 5;
       const scheduleDelta = block
         ? (skillDef.schedulePriorityModifiers?.[block] ??
           priorityDeltaForBlock(block))

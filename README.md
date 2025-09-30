@@ -89,8 +89,8 @@ Tasks (per tav)
   - `curl -s http://localhost:3000/tav/1/tasks`
 - Add: `POST /tav/:tavId/tasks` { skillId, targetId?, priority? }
   - `curl -sX POST http://localhost:3000/tav/1/tasks -H 'content-type: application/json' -d '{"skillId":"meditate","targetId":null,"priority":6}'`
-- Tick scheduler: `POST /tav/:tavId/tasks/tick` { now?, lastTickAt?, context? }
-  - `curl -sX POST http://localhost:3000/tav/1/tasks/tick -H 'content-type: application/json' -d '{"now":"2025-01-01T12:00:00Z"}'`
+- Tick scheduler: `GET /tav/:tavId/tasks/tick` (no body)
+  - `curl -s http://localhost:3000/tav/1/tasks/tick`
 
 ## Database & Migrations
 

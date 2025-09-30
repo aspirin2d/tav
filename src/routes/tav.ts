@@ -35,7 +35,7 @@ export function tavRoutes(db: PgliteDatabase<typeof schema>) {
     const schema = z.object({ name: z.string().min(1) });
     const parsed = await parseJson(c, schema);
     if ("error" in parsed) return parsed.error;
-    const created = await createTav(db as any, {
+    const created = await createTav(db, {
       name: parsed.data.name.trim(),
     });
     return jsonCreated(c, created);
@@ -45,7 +45,7 @@ export function tavRoutes(db: PgliteDatabase<typeof schema>) {
   app.get("/:id", async (c) => {
     const p = parseParamId(c, "id");
     if ("error" in p) return p.error;
-    const row = await getTavById(db as any, p.id);
+    const row = await getTavById(db, p.id);
     if (!row) return jsonError(c, "not found", 404, "not_found");
     return jsonOk(c, row);
   });
@@ -69,12 +69,13 @@ export function tavRoutes(db: PgliteDatabase<typeof schema>) {
 
     const update: Partial<typeof tavTable.$inferInsert> = {};
     if (parsed.data.name !== undefined) update.name = parsed.data.name.trim();
-    if (parsed.data.scheduleId !== undefined)
-      update.scheduleId = parsed.data.scheduleId as any;
+    if (parsed.data.scheduleId !== undefined) {
+      update.scheduleId = parsed.data.scheduleId;
+    }
 
     const [updated] = await db
       .update(tavTable)
-      .set(update as any)
+      .set(update)
       .where(eq(tavTable.id, p.id))
       .returning();
     if (!updated) return jsonError(c, "not found", 404, "not_found");
@@ -85,7 +86,7 @@ export function tavRoutes(db: PgliteDatabase<typeof schema>) {
   app.delete("/:id", async (c) => {
     const p = parseParamId(c, "id");
     if ("error" in p) return p.error;
-    const deleted = await deleteTav(db as any, p.id);
+    const deleted = await deleteTav(db, p.id);
     if (!deleted) return jsonError(c, "not found", 404, "not_found");
     return jsonOk(c, { ok: true });
   });

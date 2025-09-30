@@ -49,7 +49,7 @@ export async function moveInventoryItem(
 
     const from = bySlot.get(fromSlot);
     if (!from) {
-      throw new Error(`no inventory item found in slot ${fromSlot}`);
+      throw new Error(`No inventory item found in slot ${fromSlot}`);
     }
 
     const to = bySlot.get(toSlot);

@@ -40,7 +40,7 @@ app.route("/tav/:tavId/tasks", taskRoutes(db));
 serve(
   {
     fetch: app.fetch,
-    port: 3000,
+    port: parseInt(process.env.PORT ?? "3001"),
   },
   (info) => {
     console.log(`Server is running on http://localhost:${info.port}`);
